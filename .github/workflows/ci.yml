@@ -65,11 +65,12 @@ jobs:
             echo "::error::a key-shaped string is present in the working tree"
             exit 1
           fi
-          # History: tests/ is excluded because an early commit of
-          # tests/test_suite.py carried a literal key-shaped fixture for the
-          # loader's refusal test. That fixture is now assembled at runtime, so
-          # the working-tree scan above covers tests/ with no exclusion at all.
-          if git log -p --all -- . ':(exclude)tests' | grep -nE "$pattern"; then
+          # History: two early commits once carried a literal key-shaped test
+          # fixture (in tests/test_suite.py and tests/test_cache.py). History
+          # was rewritten so neither literal exists in any commit; both
+          # fixtures are now assembled at runtime instead. No exclusion is
+          # needed anywhere in this scan.
+          if git log -p --all -- . | grep -nE "$pattern"; then
             echo "::error::a key-shaped string is present in the history"
             exit 1
           fi
