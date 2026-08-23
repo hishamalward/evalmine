@@ -1,0 +1,348 @@
+# everyday-eight — the example suite that ships with evalmine.
+#
+# Eight small, invented tasks of the kind a working developer actually runs on a
+# model: rewrite, extract, classify, explain, and a small code change. Nothing
+# here is a real workload; the suite exists so that `evalmine run` has something to
+# run and so the schema below has a complete worked example. Replace it with your
+# own tasks — that is the entire point of the tool.
+#
+# Suite schema: docs/spec.md §5.
+
+suite: everyday-eight
+version: 1
+description: >
+  Eight everyday LLM tasks (rewrite, extract, classify, explain, small code
+  change) invented as a demonstration suite. Twenty cases across eight tasks,
+  three of the tasks carrying an output schema, twelve human preference labels
+  for judge calibration.
+
+defaults:
+  temperature: 0
+  max_tokens: 700
+  timeout_s: 60
+
+limits:
+  # Refuse the run if the pre-flight estimate exceeds this. --max-cost overrides.
+  max_cost_usd: 1.50
+
+judge:
+  model: anthropic/claude-sonnet-4-6
+  max_tokens: 400
+  rubric: |
+    Prefer the answer that a competent colleague would ship without editing.
+    Weigh, in order: (1) does it do what was asked, exactly; (2) is every claim
+    in it supported by the input; (3) is it as short as it can be while still
+    complete. Do not reward length, hedging, formatting flourishes, or a
+    friendlier tone. If the two answers are equally shippable, say "tie" —
+    ties are expected and are not a failure of the judge.
+  calibration:
+    min_kappa: 0.40
+    min_labels: 10
+    on_below_floor: flag
+
+tasks:
+  - id: changelog-line
+    kind: rewrite
+    prompt: |
+      Rewrite this commit message as one changelog line for end users of a
+      desktop note-taking app. One sentence, present tense, no issue numbers,
+      no internal module names, under 20 words.
+
+      Commit message:
+      {{commit}}
+    rubric: |
+      In addition to the suite rubric: the line must be understandable by
+      someone who has never seen the codebase, must not exceed 20 words, and
+      must not invent a benefit the commit does not support.
+    cases:
+      - id: debounce
+        vars:
+          commit: |
+            fix(editor): debounce autosave to 800ms
+
+            The autosave timer fired on every keystroke, which meant a 40-page
+            note re-serialised ~12x/second on a fast typist and pinned a core.
+      - id: sync-conflict
+        vars:
+          commit: |
+            feat(sync): last-writer-wins conflict resolution for note bodies
+
+            Previously a conflict silently dropped the remote copy. Now the newer
+            mtime wins and the loser is kept in .conflicts/ for 30 days.
+      - id: dep-bump
+        vars:
+          commit: |
+            chore(deps): bump sqlite bindings 3.44 -> 3.46
+
+            Picks up the FTS5 trigram tokenizer. No user-visible change yet.
+
+  - id: receipt-fields
+    kind: extract
+    prompt: |
+      Extract the fields below from this receipt text. Use null for anything the
+      receipt does not state. Do not compute or infer values that are not
+      printed. Return JSON only.
+
+      Receipt:
+      {{receipt}}
+    schema:
+      type: object
+      additionalProperties: false
+      required: [merchant, date, currency, total, tax, line_items]
+      properties:
+        merchant: { type: [string, "null"] }
+        date: { type: [string, "null"], description: "ISO 8601 date as printed" }
+        currency: { type: [string, "null"] }
+        total: { type: [number, "null"] }
+        tax: { type: [number, "null"] }
+        line_items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [description, amount]
+            properties:
+              description: { type: string }
+              amount: { type: number }
+    cases:
+      - id: cafe
+        vars:
+          receipt: |
+            THE SECOND CUP
+            14 Mill Lane
+            2026-03-04  09:12
+            Flat white          3.40
+            Almond croissant    2.95
+            ------------------------
+            SUBTOTAL            6.35
+            VAT 20%             1.27
+            TOTAL GBP           7.62
+            CARD ****4417
+      - id: hardware-messy
+        vars:
+          receipt: |
+            HARDWARE DEPOT #221 --- thank you!!
+            03/04/26
+            2 x M6 bolt @ 0.40 ......... 0.80
+            wood glue .................. 5.49
+            *** MEMBER DISCOUNT -1.00 ***
+            TOTAL              5.29
+            (tax included, rate not shown)
+      - id: no-total
+        vars:
+          receipt: |
+            Kiosk 7 — Provisional slip
+            Two coffees, one water
+            Amounts to be confirmed at the counter.
+
+  - id: ticket-triage
+    kind: classify
+    prompt: |
+      Classify this support ticket. Choose exactly one category and one
+      severity. Severity "critical" is reserved for data loss, a security
+      problem, or a total outage. Return JSON only.
+
+      Ticket:
+      {{ticket}}
+    schema:
+      type: object
+      additionalProperties: false
+      required: [category, severity, needs_human]
+      properties:
+        category:
+          type: string
+          enum: [billing, bug, feature_request, how_to, account_access, abuse]
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        needs_human: { type: boolean }
+    cases:
+      - id: charged-twice
+        vars:
+          ticket: |
+            I was charged twice this month, once on the 2nd and once on the 3rd,
+            same amount. I only have one seat. Can you refund one of them?
+      - id: cant-login
+        vars:
+          ticket: |
+            Password reset emails never arrive. I've tried three addresses and
+            checked spam. This is the fourth day. My whole team is locked out.
+      - id: polite-feature
+        vars:
+          ticket: |
+            Love the app. Any chance of a dark theme? Not urgent at all, just
+            would be easier on the eyes at night.
+
+  - id: stacktrace-explain
+    kind: explain
+    prompt: |
+      Explain this error to a developer in their first year. Say what went
+      wrong, why it went wrong, and the single most likely fix. Three short
+      paragraphs at most. Do not paste the traceback back at them.
+
+      {{trace}}
+    rubric: |
+      In addition to the suite rubric: the diagnosis must be correct, the fix
+      must be the most likely one rather than a list of possibilities, and the
+      explanation must not assume knowledge the reader was told not to have.
+    cases:
+      - id: none-attr
+        vars:
+          trace: |
+            Traceback (most recent call last):
+              File "app/report.py", line 41, in build
+                rows = load(path).records
+            AttributeError: 'NoneType' object has no attribute 'records'
+      - id: unicode
+        vars:
+          trace: |
+            Traceback (most recent call last):
+              File "ingest.py", line 12, in read
+                return open(p).read()
+            UnicodeDecodeError: 'utf-8' codec can't decode byte 0xa3 in position
+            1041: invalid start byte
+
+  - id: meeting-actions
+    kind: extract
+    prompt: |
+      Pull the action items out of these notes. An action item has an owner and
+      something to be done. If a due date is not stated, use null — do not guess
+      one from context. Return JSON only.
+
+      Notes:
+      {{notes}}
+    schema:
+      type: object
+      additionalProperties: false
+      required: [actions]
+      properties:
+        actions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [owner, action, due]
+            properties:
+              owner: { type: string }
+              action: { type: string }
+              due: { type: [string, "null"] }
+    cases:
+      - id: standup
+        vars:
+          notes: |
+            Priya: staging is still on the old image, she'll redeploy after lunch.
+            Marcus asked whether we still need the CSV export — nobody knew, he'll
+            check with support by Friday. General agreement that the onboarding
+            copy is confusing. Someone should rewrite it.
+      - id: no-actions
+        vars:
+          notes: |
+            Short one today. Everyone's blocked on the vendor, nothing moved
+            since yesterday, we'll pick it up when they reply.
+
+  - id: regex-repair
+    kind: code
+    prompt: |
+      This function is meant to return every hashtag in a string, without the
+      leading '#', lowercased, in order of first appearance and without
+      duplicates. It does not. Return the corrected function and nothing else.
+
+      ```python
+      {{code}}
+      ```
+    rubric: |
+      In addition to the suite rubric: the returned function must actually
+      satisfy the stated contract, including the de-duplication and the
+      ordering. Prefer the answer that changes less of the original.
+    cases:
+      - id: dup-and-case
+        vars:
+          code: |
+            import re
+
+            def hashtags(text):
+                return re.findall(r"#\w+", text)
+      - id: greedy
+        vars:
+          code: |
+            import re
+
+            def hashtags(text):
+                found = re.findall(r"#(.*)", text)
+                return [f.lower() for f in found]
+
+  - id: blurb-tighten
+    kind: rewrite
+    prompt: |
+      Rewrite this product blurb in 25 words or fewer. Keep every concrete fact.
+      Remove every superlative and every claim you cannot support from the text
+      itself. Return only the rewritten blurb.
+
+      {{blurb}}
+    rubric: |
+      In addition to the suite rubric: a rewrite over 25 words loses outright,
+      however good it reads. A rewrite that drops a concrete fact (a number, a
+      capability, a constraint) loses to one that keeps it.
+    cases:
+      - id: superlatives
+        vars:
+          blurb: |
+            The world's most powerful and revolutionary task manager, trusted by
+            millions, delivers an unparalleled experience. Sync across up to 5
+            devices, share lists with 20 collaborators, and work fully offline.
+      - id: already-short
+        vars:
+          blurb: |
+            Offline-first task manager. Syncs to 5 devices. Shares lists with up
+            to 20 people. No account required.
+      - id: vague
+        vars:
+          blurb: |
+            A next-generation platform that empowers teams to unlock their
+            potential through seamless, AI-driven collaboration at scale.
+
+  - id: sql-from-question
+    kind: code
+    prompt: |
+      Write one SQL query answering the question, against this schema. Standard
+      SQL, no vendor extensions. Return only the query.
+
+      Schema:
+        orders(id, customer_id, placed_at DATE, status TEXT, total_cents INT)
+        customers(id, name TEXT, country TEXT, created_at DATE)
+        refunds(id, order_id, amount_cents INT, refunded_at DATE)
+
+      Question: {{question}}
+    rubric: |
+      In addition to the suite rubric: the query must be correct against the
+      stated schema, including the treatment of orders with no refund. Prefer
+      the simpler query when both are correct; do not reward CTEs for their own
+      sake.
+    cases:
+      - id: net-revenue
+        vars:
+          question: >
+            For each country, net revenue in 2025 — order totals minus refunds —
+            counting only orders with status 'complete', highest first.
+      - id: never-ordered
+        vars:
+          question: >
+            How many customers created in 2025 have never placed an order?
+
+# Human preference labels. Each one says which answer YOU preferred on a given
+# case for a given baseline/candidate pair. The judge is scored against these:
+# see docs/spec.md §7 (Cohen's kappa) and §8 (calibration floor). Labels whose
+# model pair is not in the current run are ignored and reported as such.
+labels:
+  - { task: changelog-line,    case: debounce,      baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: candidate, note: "haiku kept the module name" }
+  - { task: changelog-line,    case: sync-conflict, baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: baseline,  note: "gemini invented a UI for the conflict folder" }
+  - { task: changelog-line,    case: dep-bump,      baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: tie }
+  - { task: receipt-fields,    case: hardware-messy, baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: baseline,  note: "gemini computed a tax figure the receipt never printed" }
+  - { task: receipt-fields,    case: no-total,      baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: tie }
+  - { task: ticket-triage,     case: cant-login,    baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: candidate, note: "team-wide lockout is high, not medium" }
+  - { task: ticket-triage,     case: polite-feature, baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: tie }
+  - { task: stacktrace-explain, case: none-attr,    baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: baseline,  note: "gemini listed four possible causes instead of one fix" }
+  - { task: meeting-actions,   case: standup,       baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: candidate, note: "haiku assigned the unowned rewrite to Marcus" }
+  - { task: regex-repair,      case: dup-and-case,  baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: candidate }
+  - { task: blurb-tighten,     case: superlatives,  baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: baseline,  note: "gemini came in at 31 words" }
+  - { task: sql-from-question, case: net-revenue,   baseline: anthropic/claude-haiku-4-5, candidate: google/gemini-2.5-flash, prefer: tie,       note: "both handled the missing-refund join correctly" }
