@@ -20,9 +20,10 @@ import yaml
 _TABLE_GLOB = "prices-*.yaml"
 _DATE_RE = re.compile(r"prices-(\d{4}-\d{2}-\d{2})\.ya?ml$")
 
-#: Shipped inside the wheel by pyproject's force-include, and present at the
-#: repo root when running from a checkout.
-_PACKAGED_PRICES = Path(__file__).with_name("prices")
+#: Shipped inside the wheel by pyproject's force-include (as ``price_tables``,
+#: so the data directory cannot shadow this module), and present at the repo
+#: root when running from a checkout.
+_PACKAGED_PRICES = Path(__file__).with_name("price_tables")
 _REPO_PRICES = Path(__file__).resolve().parents[2] / "prices"
 
 

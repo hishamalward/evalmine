@@ -153,7 +153,10 @@ def test_duplicate_case_id_is_an_error(minimal_suite, write_suite):
 
 
 def test_a_key_shaped_string_refuses_to_load(minimal_suite, write_suite):
-    minimal_suite["tasks"][0]["prompt"] = "Use " + "sk-" + "ant-" + "api03-" + "A" * 20 + " {{thing}}"
+    # assembled at runtime so that no key-shaped literal exists in this file
+    # for a secret scanner to trip over
+    keyish = "sk-" + "ant-" + "api03-" + "A" * 20
+    minimal_suite["tasks"][0]["prompt"] = f"Use {keyish} {{{{thing}}}}"
     with pytest.raises(SuiteError) as exc:
         load_suite(write_suite(minimal_suite))
     assert "Anthropic API key" in str(exc.value)

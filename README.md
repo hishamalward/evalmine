@@ -14,7 +14,18 @@ The three real provider adapters and the MCP surface are not built yet.
 Spec: [docs/spec.md](docs/spec.md).
 
 ```
-evalmine run examples/everyday-eight.yaml --models fake/a,fake/b --fake
+pip install -e ".[dev]"
+
+evalmine validate examples/everyday-eight.yaml
+
+# --fake routes every model string to the deterministic fake adapter:
+# no key, no network, no spend. These two model strings are the ones the
+# example suite's twelve human labels refer to, so the run exercises the
+# judge-calibration path end to end.
+evalmine run examples/everyday-eight.yaml \
+  --models anthropic/claude-haiku-4-5,google/gemini-2.5-flash --fake
 ```
+
+The report lands in `reports/everyday-eight/<run-id>/report.md`.
 
 MIT licensed.
