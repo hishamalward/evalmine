@@ -4,16 +4,18 @@
 # report header names the file it used, and every row carries where it came
 # from and when it was read.
 #
-# THESE FIGURES ARE PLACEHOLDERS. `verified: false` below is not decoration:
-# nobody has re-read the providers' pricing pages for this file, so every row
-# is illustrative and every cost number derived from it is illustrative too.
-# Any report generated against an unverified table says so in its header.
-# Before you publish a cost comparison: open each `source` URL, correct the
-# numbers, set `read_on` on each row, and set `verified: true`.
+# Re-verified 2026-08-23 against each provider's own pricing page (fetched
+# live that day; see `source` and `read_on` on each row, and the per-row
+# `verified` flag - `verified` is not part of the S6.3 cache-key/row schema
+# and evalmine's loader ignores it, it is a human-readable record of which
+# rows were actually checked). All three real rows below are verified.
+# `cached_input_per_mtok` on the Anthropic rows is the prompt-cache *read*
+# price (a cache write costs more, not less, than a base input token, so it
+# is not the number evalmine's cost formula wants).
 
 pinned: 2026-08-23
 currency: USD
-verified: false
+verified: true
 notes: >
   Prices per million tokens. Only the model strings this repository actually
   references are listed: an unknown model is a hard failure by design, so add a
@@ -25,22 +27,25 @@ models:
     input_per_mtok: 3.00
     output_per_mtok: 15.00
     cached_input_per_mtok: 0.30
-    source: https://www.anthropic.com/pricing
-    read_on: null
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-23
+    verified: true
 
   - model: anthropic/claude-haiku-4-5
     input_per_mtok: 1.00
     output_per_mtok: 5.00
     cached_input_per_mtok: 0.10
-    source: https://www.anthropic.com/pricing
-    read_on: null
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-23
+    verified: true
 
   - model: google/gemini-2.5-flash
     input_per_mtok: 0.30
     output_per_mtok: 2.50
-    cached_input_per_mtok: 0.075
+    cached_input_per_mtok: 0.03
     source: https://ai.google.dev/gemini-api/docs/pricing
-    read_on: null
+    read_on: 2026-08-23
+    verified: true
 
   # The fake adapter is priced so that a --fake run exercises the whole cost
   # path rather than short-circuiting at zero. These numbers buy nothing and

@@ -137,7 +137,8 @@ def test_validate_exits_zero_and_makes_no_calls(capsys):
     assert run_cli("validate", str(EXAMPLE_SUITE), "--prices", PRICE_FILE) == 0
     out = capsys.readouterr().out
     assert "8 tasks, 20 cases, 12 labels" in out
-    assert "verified: false" in out
+    # The shipped table is verified (S6.3), so no placeholder note prints.
+    assert "verified: false" not in out
 
 
 def test_validate_catches_an_unrenderable_prompt(tmp_path, capsys):
@@ -162,11 +163,12 @@ def test_validate_catches_a_model_the_price_table_does_not_know(tmp_path, capsys
     assert "claude-imaginary-9" in capsys.readouterr().err
 
 
-def test_prices_prints_the_table_and_its_warning(capsys):
+def test_prices_prints_the_table_with_no_unverified_warning(capsys):
     assert run_cli("prices", "--table", PRICE_FILE) == 0
     out = capsys.readouterr().out
     assert "anthropic/claude-haiku-4-5" in out
-    assert "WARNING: this table is unverified" in out
+    # The shipped table is verified (S6.3), so no warning prints.
+    assert "WARNING: this table is unverified" not in out
 
 
 def test_prices_for_a_suite_resolves_every_model_it_could_use(capsys):

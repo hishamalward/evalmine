@@ -294,9 +294,27 @@ def test_a_judge_under_test_is_warned_about(tmp_path):
 
 
 def test_an_unverified_price_table_is_warned_about(tmp_path):
-    result = run(tmp_path)
+    # The shipped table is verified (S6.3); build an unverified one here so
+    # the warning path itself stays covered.
+    prices_path = tmp_path / "prices-2026-08-23.yaml"
+    prices_path.write_text(
+        "pinned: 2026-08-23\n"
+        "verified: false\n"
+        "models:\n"
+        "  - {model: anthropic/claude-haiku-4-5, input_per_mtok: 1, output_per_mtok: 5}\n"
+        "  - {model: google/gemini-2.5-flash, input_per_mtok: 0.3, output_per_mtok: 2.5}\n"
+        "  - {model: anthropic/claude-sonnet-4-6, input_per_mtok: 3, output_per_mtok: 15}\n",
+        encoding="utf-8",
+    )
+    result = run(tmp_path, prices_path=prices_path, prices_dir=None)
     assert result.report["prices_verified"] is False
     assert any("verified: false" in w for w in result.report["warnings"])
+
+
+def test_the_shipped_price_table_is_verified_and_warns_about_nothing(tmp_path):
+    result = run(tmp_path)
+    assert result.report["prices_verified"] is True
+    assert not any("verified: false" in w for w in result.report["warnings"])
 
 
 def test_repeats_multiply_the_pairs(tmp_path):

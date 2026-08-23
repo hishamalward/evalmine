@@ -15,12 +15,13 @@ from evalmine.prices import (
 )
 
 
-def test_shipped_table_loads_and_declares_itself_unverified():
+def test_shipped_table_loads_and_declares_itself_verified():
     table = load_price_table(prices_dir=PRICES_DIR)
     assert table.pinned == "2026-08-23"
     assert table.currency == "USD"
-    assert table.verified is False
-    assert "UNVERIFIED" in table.describe()
+    # Re-verified 2026-08-23 against each provider's own pricing page.
+    assert table.verified is True
+    assert "UNVERIFIED" not in table.describe()
     for model in ("anthropic/claude-sonnet-4-6", "google/gemini-2.5-flash", "fake/a", "fake/b"):
         assert table.get(model).model == model
 
