@@ -16,3 +16,4 @@ reports/
 
 # never
 .env
+.DS_Store
