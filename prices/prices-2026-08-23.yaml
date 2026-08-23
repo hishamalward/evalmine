@@ -1,0 +1,74 @@
+# evalmine price table, pinned by date. Spec: docs/spec.md S6.3.
+#
+# A cost number without a date is a lie, so the date is in the filename, the
+# report header names the file it used, and every row carries where it came
+# from and when it was read.
+#
+# THESE FIGURES ARE PLACEHOLDERS. `verified: false` below is not decoration:
+# nobody has re-read the providers' pricing pages for this file, so every row
+# is illustrative and every cost number derived from it is illustrative too.
+# Any report generated against an unverified table says so in its header.
+# Before you publish a cost comparison: open each `source` URL, correct the
+# numbers, set `read_on` on each row, and set `verified: true`.
+
+pinned: 2026-08-23
+currency: USD
+verified: false
+notes: >
+  Prices per million tokens. Only the model strings this repository actually
+  references are listed: an unknown model is a hard failure by design, so add a
+  row for every model you intend to run rather than relying on a fallback price.
+  There is no fallback price.
+
+models:
+  - model: anthropic/claude-sonnet-4-6
+    input_per_mtok: 3.00
+    output_per_mtok: 15.00
+    cached_input_per_mtok: 0.30
+    source: https://www.anthropic.com/pricing
+    read_on: null
+
+  - model: anthropic/claude-haiku-4-5
+    input_per_mtok: 1.00
+    output_per_mtok: 5.00
+    cached_input_per_mtok: 0.10
+    source: https://www.anthropic.com/pricing
+    read_on: null
+
+  - model: google/gemini-2.5-flash
+    input_per_mtok: 0.30
+    output_per_mtok: 2.50
+    cached_input_per_mtok: 0.075
+    source: https://ai.google.dev/gemini-api/docs/pricing
+    read_on: null
+
+  # The fake adapter is priced so that a --fake run exercises the whole cost
+  # path rather than short-circuiting at zero. These numbers buy nothing and
+  # cost nothing; they exist to make the arithmetic observable.
+  - model: fake/a
+    input_per_mtok: 1.00
+    output_per_mtok: 4.00
+    cached_input_per_mtok: 0.10
+    source: not a real model
+    read_on: 2026-08-23
+
+  - model: fake/b
+    input_per_mtok: 2.00
+    output_per_mtok: 8.00
+    cached_input_per_mtok: 0.20
+    source: not a real model
+    read_on: 2026-08-23
+
+  - model: fake/c
+    input_per_mtok: 0.50
+    output_per_mtok: 2.00
+    cached_input_per_mtok: 0.05
+    source: not a real model
+    read_on: 2026-08-23
+
+  - model: fake/judge
+    input_per_mtok: 0.25
+    output_per_mtok: 1.00
+    cached_input_per_mtok: 0.025
+    source: not a real model
+    read_on: 2026-08-23
