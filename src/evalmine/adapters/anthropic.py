@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 import httpx
@@ -25,10 +26,36 @@ API_VERSION = "2023-06-01"
 #: arbitrary; only the shape of ``input`` matters to the caller.
 _SCHEMA_TOOL_NAME = "emit_result"
 
+_MODEL_ID = re.compile(r"^claude-(?P<family>opus|sonnet|haiku|fable|mythos)-(?P<major>\d+)(?:-(?P<minor>\d+))?")
+
+
+def sampling_params_supported(model_id: str) -> bool:
+    """Whether the Messages API still accepts ``temperature``/``top_p`` for ``model_id``.
+
+    The API removed the sampling parameters on Opus 4.7 and everything after it
+    (Opus 4.8, Opus 5, Sonnet 5, Fable 5, Mythos 5): sending them is a 400,
+    ``"temperature is deprecated for this model"``, not a warning. Older models
+    (Opus/Sonnet 4.6, Haiku 4.5, the 3.x line) accept them. For a model that
+    rejects them the adapter omits the fields, which means the suite's
+    ``temperature`` is recorded in the report but had no effect on that model -
+    there is no equivalent knob to translate it to.
+    """
+    m = _MODEL_ID.match(model_id)
+    if m is None:
+        return True
+    family = m.group("family")
+    major = int(m.group("major"))
+    minor = int(m.group("minor") or 0)
+    if family in ("fable", "mythos"):
+        return False
+    if major >= 5:
+        return False
+    return not (family == "opus" and (major, minor) >= (4, 7))
+
 
 class AnthropicAdapter:
     name = "anthropic"
-    version = 1
+    version = 2
 
     def __init__(
         self,
@@ -58,12 +85,13 @@ class AnthropicAdapter:
             "model": req.model_id,
             "max_tokens": req.max_tokens,
             "messages": [{"role": "user", "content": req.prompt}],
-            "temperature": req.temperature,
         }
+        if sampling_params_supported(req.model_id):
+            body["temperature"] = req.temperature
+            if req.top_p is not None:
+                body["top_p"] = req.top_p
         if req.system:
             body["system"] = req.system
-        if req.top_p is not None:
-            body["top_p"] = req.top_p
         if req.stop:
             body["stop_sequences"] = list(req.stop)
         if req.schema is not None:

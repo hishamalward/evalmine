@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from evalmine.adapters.anthropic import AnthropicAdapter
+from evalmine.adapters.anthropic import AnthropicAdapter, sampling_params_supported
 from evalmine.adapters.base import AdapterError, Request
 from evalmine.adapters.google import GoogleAdapter
 from evalmine.adapters.openai import OpenAIAdapter
@@ -99,6 +99,51 @@ def test_anthropic_schema_request_forces_the_tool_and_is_native():
     assert resp.schema_mode == "native"
     assert adapter.schema_mode_for(SCHEMA) == "native"
     assert adapter.schema_mode_for(None) == "prompted"
+
+
+@pytest.mark.parametrize(
+    "model_id, supported",
+    [
+        ("claude-haiku-4-5", True),
+        ("claude-sonnet-4-6", True),
+        ("claude-opus-4-6", True),
+        ("claude-3-5-sonnet-20241022", True),
+        ("claude-opus-4-7", False),
+        ("claude-opus-4-8", False),
+        ("claude-opus-5", False),
+        ("claude-sonnet-5", False),
+        ("claude-fable-5", False),
+        ("claude-mythos-5", False),
+    ],
+)
+def test_anthropic_sampling_support_table(model_id, supported):
+    assert sampling_params_supported(model_id) is supported
+
+
+def test_anthropic_omits_sampling_params_where_the_api_rejects_them():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "temperature" not in body
+        assert "top_p" not in body
+        assert body["max_tokens"] == 900
+        return json_response(200, ANTHROPIC_SUCCESS)
+
+    adapter = AnthropicAdapter(api_key="sk-test", transport=transport(handler))
+    resp = adapter.complete(
+        req(model_id="claude-opus-5", temperature=0.0, top_p=0.9, max_tokens=900)
+    )
+    assert resp.text == "hello there"
+
+
+def test_anthropic_keeps_sampling_params_on_models_that_accept_them():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["temperature"] == 0.2
+        assert body["top_p"] == 0.9
+        return json_response(200, ANTHROPIC_SUCCESS)
+
+    adapter = AnthropicAdapter(api_key="sk-test", transport=transport(handler))
+    adapter.complete(req(model_id="claude-haiku-4-5", temperature=0.2, top_p=0.9))
 
 
 def test_anthropic_missing_usage_is_none_not_zero():
