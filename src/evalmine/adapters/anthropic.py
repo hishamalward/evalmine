@@ -53,9 +53,26 @@ def sampling_params_supported(model_id: str) -> bool:
     return not (family == "opus" and (major, minor) >= (4, 7))
 
 
+def thinking_defaults_on(model_id: str) -> bool:
+    """Whether omitting ``thinking`` turns it ON for ``model_id``.
+
+    From Opus 5 / Sonnet 5 onward a request without a ``thinking`` field runs
+    with adaptive thinking, and thinking tokens count against ``max_tokens`` -
+    on a 900-token answer budget the model can spend the whole budget thinking
+    and return no text at all. evalmine's params are an answer budget, so the
+    adapter sends ``thinking: {type: "disabled"}`` for these models, which the
+    API accepts at the default effort. Fable/Mythos cannot disable thinking
+    (that is a 400) and are left alone; older models default to off already.
+    """
+    m = _MODEL_ID.match(model_id)
+    if m is None:
+        return False
+    return m.group("family") in ("opus", "sonnet", "haiku") and int(m.group("major")) >= 5
+
+
 class AnthropicAdapter:
     name = "anthropic"
-    version = 2
+    version = 3
 
     def __init__(
         self,
@@ -90,6 +107,8 @@ class AnthropicAdapter:
             body["temperature"] = req.temperature
             if req.top_p is not None:
                 body["top_p"] = req.top_p
+        if thinking_defaults_on(req.model_id):
+            body["thinking"] = {"type": "disabled"}
         if req.system:
             body["system"] = req.system
         if req.stop:
@@ -139,6 +158,8 @@ def _extract(data: dict[str, Any], wants_schema: bool) -> tuple[str, str]:
         for block in blocks:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 return json.dumps(block.get("input", {}), ensure_ascii=False), finish_reason
+        if finish_reason == "max_tokens":
+            return "", finish_reason
         raise AdapterError(
             "anthropic response carries a schema request but no tool_use block", retryable=False
         )
@@ -149,5 +170,10 @@ def _extract(data: dict[str, Any], wants_schema: bool) -> tuple[str, str]:
         if isinstance(block, dict) and block.get("type") == "text"
     ]
     if not texts:
+        #: A budget exhausted before the first text token (thinking-only
+        #: content) is a measurable outcome - an empty answer with
+        #: ``finish_reason: max_tokens`` - not a reason to abort the run.
+        if finish_reason == "max_tokens":
+            return "", finish_reason
         raise AdapterError("anthropic response has no text block", retryable=False)
     return "".join(texts), finish_reason

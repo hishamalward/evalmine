@@ -12,7 +12,11 @@ import json
 import httpx
 import pytest
 
-from evalmine.adapters.anthropic import AnthropicAdapter, sampling_params_supported
+from evalmine.adapters.anthropic import (
+    AnthropicAdapter,
+    sampling_params_supported,
+    thinking_defaults_on,
+)
 from evalmine.adapters.base import AdapterError, Request
 from evalmine.adapters.google import GoogleAdapter
 from evalmine.adapters.openai import OpenAIAdapter
@@ -144,6 +148,70 @@ def test_anthropic_keeps_sampling_params_on_models_that_accept_them():
 
     adapter = AnthropicAdapter(api_key="sk-test", transport=transport(handler))
     adapter.complete(req(model_id="claude-haiku-4-5", temperature=0.2, top_p=0.9))
+
+
+@pytest.mark.parametrize(
+    "model_id, defaults_on",
+    [
+        ("claude-haiku-4-5", False),
+        ("claude-sonnet-4-6", False),
+        ("claude-opus-4-8", False),
+        ("claude-opus-5", True),
+        ("claude-sonnet-5", True),
+        ("claude-fable-5", False),
+        ("claude-mythos-5", False),
+    ],
+)
+def test_anthropic_thinking_default_table(model_id, defaults_on):
+    assert thinking_defaults_on(model_id) is defaults_on
+
+
+def test_anthropic_disables_thinking_where_it_would_default_on():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen[body["model"]] = body.get("thinking")
+        return json_response(200, ANTHROPIC_SUCCESS)
+
+    adapter = AnthropicAdapter(api_key="sk-test", transport=transport(handler))
+    for model_id in ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5"):
+        adapter.complete(req(model_id=model_id))
+    assert seen["claude-opus-5"] == {"type": "disabled"}
+    assert seen["claude-sonnet-5"] == {"type": "disabled"}
+    assert seen["claude-haiku-4-5"] is None
+    assert seen["claude-fable-5"] is None
+
+
+def test_anthropic_budget_exhausted_before_text_is_an_empty_answer():
+    body = {
+        "content": [{"type": "thinking", "thinking": "", "signature": "x"}],
+        "stop_reason": "max_tokens",
+        "usage": {"input_tokens": 10, "output_tokens": 900},
+    }
+    adapter = AnthropicAdapter(
+        api_key="sk-test", transport=transport(lambda r: json_response(200, body))
+    )
+    resp = adapter.complete(req(model_id="claude-opus-5"))
+    assert resp.text == ""
+    assert resp.finish_reason == "max_tokens"
+    assert resp.output_tokens == 900
+
+    schema_resp = adapter.complete(req(model_id="claude-opus-5", schema=SCHEMA))
+    assert schema_resp.text == ""
+    assert schema_resp.finish_reason == "max_tokens"
+
+
+def test_anthropic_no_text_on_a_normal_stop_is_still_an_error():
+    body = {
+        "content": [{"type": "thinking", "thinking": "", "signature": "x"}],
+        "stop_reason": "end_turn",
+    }
+    adapter = AnthropicAdapter(
+        api_key="sk-test", transport=transport(lambda r: json_response(200, body))
+    )
+    with pytest.raises(AdapterError):
+        adapter.complete(req())
 
 
 def test_anthropic_missing_usage_is_none_not_zero():
