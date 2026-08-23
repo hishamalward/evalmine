@@ -143,6 +143,63 @@ def test_all_the_files_are_written(first_run):
     assert latest["run_id"] == result.run_id
 
 
+def test_report_html_is_written_beside_the_markdown(first_run):
+    result, _ = first_run
+    path = result.report_path.with_name("report.html")
+    assert path.is_file()
+    assert result.report_html_path == path
+    html = path.read_text(encoding="utf-8")
+
+    # blind by default: no model name is visible until the reveal toggle
+    assert 'id="reveal" aria-pressed="false"' in html
+    assert ".reveal-inline{display:none}" in html
+    assert "data-reveal', '0'" in html
+    assert '<div class="verdict reveal-only">' in html
+
+    # the labelling flow, and the thing it exists to produce
+    assert 'id="copy">Copy labels YAML' in html
+    assert html.count('data-choice="tie"') == result.report["totals"]["pairs"]
+    assert "'labels:'" in html
+    assert "prefer: ' + prefer(p, rec.choice)" in html
+
+    # the per-task agreement breakdown
+    assert "Per-task agreement" in html
+
+    # self-contained: no network, no framework, no external asset
+    assert "<script src=" not in html and "http://" not in html and "https://" not in html
+    assert len(html) < 2_000_000
+
+
+def test_report_html_shows_every_judged_pair_side_by_side(first_run):
+    result, _ = first_run
+    html = result.report_path.with_name("report.html").read_text(encoding="utf-8")
+    assert html.count('<article class="pair"') == result.report["totals"]["pairs"]
+    assert html.count("<h4>Answer A") == result.report["totals"]["pairs"]
+    assert html.count("<h4>Answer B") == result.report["totals"]["pairs"]
+    # every answer that was scored is embedded in the page
+    for pair in result.pair_view:
+        assert pair["a_text"] and pair["b_text"]
+
+
+def test_the_per_task_agreement_breakdown_is_in_json_and_markdown(first_run):
+    result, _ = first_run
+    rows = result.report["calibration"]["per_task_agreement"]
+    assert rows, "twelve labels across eight tasks must break out per task"
+    assert sum(row["n"] for row in rows) == result.report["calibration"]["n_labels"]
+    # worst first, same discipline as the per-task win-rate table
+    assert [row["agreement"] for row in rows] == sorted(row["agreement"] for row in rows)
+    for row in rows:
+        assert set(row) >= {"task", "n", "agree", "agreement", "kappa", "kappa_band", "low_n"}
+        # kappa only where n makes it meaningful
+        assert (row["kappa"] is None) or not row["low_n"]
+
+    markdown = (result.report_path.parent / "report.md").read_text(encoding="utf-8")
+    section = markdown.split("## Calibration")[1].split("## Win-rates")[0]
+    assert "Per-task agreement" in section
+    for row in rows:
+        assert f"`{row['task']}`" in section
+
+
 def test_report_md_renders_the_sections_in_spec_order(first_run):
     result, _ = first_run
     markdown = (result.report_path.parent / "report.md").read_text(encoding="utf-8")

@@ -197,6 +197,9 @@ def run_suite_impl(
         "run_id": result.run_id,
         "report_path": str(result.report_path),
         "report_md_path": str(result.report_md_path),
+        "report_html_path": (
+            str(result.report_html_path) if result.report_html_path is not None else None
+        ),
         **summary,
     }
 

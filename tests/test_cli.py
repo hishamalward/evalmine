@@ -47,6 +47,13 @@ def test_run_exits_zero_and_prints_a_summary(tmp_path, capsys):
     assert "calibration" in out
 
 
+def test_run_points_at_the_html_report(tmp_path, capsys):
+    assert run_cli(*run_args(tmp_path)) == 0
+    assert "report.html" in capsys.readouterr().out
+    written = list((tmp_path / "reports" / "everyday-eight").glob("*/report.html"))
+    assert len(written) == 1
+
+
 def test_run_json_prints_the_report(tmp_path, capsys):
     assert run_cli(*run_args(tmp_path, "--json")) == 0
     report = json.loads(capsys.readouterr().out)

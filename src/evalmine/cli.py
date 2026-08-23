@@ -175,6 +175,8 @@ def _print_summary(report, result, verbose: bool = False) -> None:
     cal = report["calibration"]
     print(f"run {report['run_id']}  ({report['suite']['name']})")
     print(f"  report: {result.report_md_path}")
+    if result.report_html_path is not None:
+        print(f"  html (blind answer pairs + labelling): {result.report_html_path}")
     print(
         f"  calibration: {cal['status']} - kappa {format_kappa(cal.get('kappa'))}"
         f" over {cal['n_labels']} labels"

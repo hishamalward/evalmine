@@ -19,6 +19,7 @@ from . import __version__
 from .adapters import Request, build_adapter, call_with_retries, split_model
 from .adapters.base import Adapter, AdapterError
 from .cache import DEFAULT_CACHE_DIR, Cache, answer_payload, cache_key, judge_payload
+from .html_report import build_pair_view, render_html
 from .judge import PROVIDER_ERROR as REASON_PROVIDER_ERROR
 from .judge import Judge, JudgeCall, PairResult, exclusion_reason
 from .metrics import (
@@ -185,6 +186,10 @@ class RunResult:
     report_path: Path
     report_md_path: Path
     exit_code: int
+    report_html_path: Path | None = None
+    #: One record per judged pair - prompt, both answers, verdict, and the
+    #: blind A/B mapping report.html was built from.
+    pair_view: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -493,10 +498,12 @@ def run_suite(
     data.previous_report = _find_previous_report(out_root, suite.name, run_id)
 
     report = build_report(data)
+    pair_view = build_pair_view(data)
     report_path = out_root / suite.name / run_id / "report.json"
     md_path = report_path.with_name("report.md")
+    html_path = report_path.with_name("report.html")
     if write:
-        _write_outputs(data, report, report_path, md_path)
+        _write_outputs(data, report, pair_view, report_path, md_path, html_path)
 
     exit_code = 0
     if aborted:
@@ -506,6 +513,8 @@ def run_suite(
         report=report,
         report_path=report_path,
         report_md_path=md_path,
+        report_html_path=html_path,
+        pair_view=pair_view,
         exit_code=exit_code,
     )
 
@@ -785,7 +794,12 @@ def _judge_all_pairs(
 
 
 def _write_outputs(
-    data: RunData, report: dict[str, Any], report_path: Path, md_path: Path
+    data: RunData,
+    report: dict[str, Any],
+    pair_view: list[dict[str, Any]],
+    report_path: Path,
+    md_path: Path,
+    html_path: Path | None = None,
 ) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
@@ -793,6 +807,10 @@ def _write_outputs(
         encoding="utf-8",
     )
     md_path.write_text(render_markdown(report), encoding="utf-8")
+    if html_path is not None:
+        # report.html carries the answers themselves, which report.json does
+        # not: it is built from the run, not re-rendered from the record.
+        html_path.write_text(render_html(report, pair_view), encoding="utf-8")
 
     answers_path = report_path.with_name("answers.jsonl")
     with answers_path.open("w", encoding="utf-8") as handle:
