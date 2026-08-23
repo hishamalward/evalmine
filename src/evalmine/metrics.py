@@ -30,6 +30,11 @@ MIN_PAIRS_FOR_CI = 8
 
 BOOTSTRAP_RESAMPLES = 10_000
 
+#: Below this many labels on one task, a per-task kappa is more noise than
+#: signal: it is suppressed and the plain agreement is flagged low-n
+#: (spec S7.4, added 2026-08-23).
+PER_TASK_KAPPA_MIN_N = 5
+
 _FENCE_RE = re.compile(r"```(?:[A-Za-z0-9_+-]*)[ \t]*\r?\n(.*?)```", re.DOTALL)
 
 
@@ -404,3 +409,49 @@ def calibration_status(
         "agreement": kappa_result.get("po"),
         "n_labels": n,
     }
+
+
+def per_task_agreement(
+    rows: Sequence[tuple[str, str, str]], min_n: int = PER_TASK_KAPPA_MIN_N
+) -> list[dict[str, Any]]:
+    """Judge-vs-human agreement broken out by task (S7.4, added 2026-08-23).
+
+    ``rows`` are ``(task, judge_category, human_category)``. One overall kappa
+    hides a judge that is tuned to one task's taste and silently failing
+    another's, which is the failure mode a single number cannot show you. Kappa
+    is computed per task only where ``n >= min_n``; below that the row carries
+    plain agreement flagged ``low_n`` rather than a kappa nobody should read.
+
+    Sorted worst first, like the per-task table: where the judge diverges most
+    from you is the first row on screen.
+    """
+    by_task: dict[str, list[tuple[str, str]]] = {}
+    for task, judge, human in rows:
+        by_task.setdefault(task, []).append((judge, human))
+
+    out: list[dict[str, Any]] = []
+    for task, pairs in by_task.items():
+        result = cohens_kappa(pairs)
+        low_n = result["n"] < min_n
+        kappa = None if low_n else result["kappa"]
+        out.append(
+            {
+                "task": task,
+                "n": result["n"],
+                "agree": result["agree"],
+                "agreement": result["po"],
+                "kappa": kappa,
+                "kappa_band": kappa_band(kappa),
+                "low_n": low_n,
+                "min_n": min_n,
+                "status": "low_n" if low_n else result["status"],
+                "confusion": result["confusion"],
+            }
+        )
+
+    def worst_first(row: dict[str, Any]) -> tuple[float, str]:
+        agreement = row["agreement"]
+        return (2.0 if agreement is None else agreement, row["task"])
+
+    out.sort(key=worst_first)
+    return out

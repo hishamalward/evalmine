@@ -6,6 +6,7 @@ import pytest
 
 from evalmine.metrics import (
     FLIP_RATE_WARNING,
+    PER_TASK_KAPPA_MIN_N,
     bootstrap_ci,
     calibration_status,
     cohens_kappa,
@@ -16,6 +17,7 @@ from evalmine.metrics import (
     latency_stats,
     median,
     p95_nearest_rank,
+    per_task_agreement,
     schema_pass_rate,
     schema_verdict,
     score_pair,
@@ -335,3 +337,63 @@ def test_latency_stats_carry_the_live_fraction():
     assert stats["p50_ms"] == 250
     assert stats["live_fraction"] == 0.25
     assert latency_stats([], 0)["live_fraction"] is None
+
+
+# --------------------------------------------------------------------------
+# S7.4 per-task agreement (added 2026-08-23)
+# --------------------------------------------------------------------------
+
+
+def test_per_task_agreement_finds_the_task_the_judge_diverges_on():
+    """The founder's narrowness concern: one kappa hides a task going wrong."""
+    rows = (
+        # the judge and the human agree on every one of these
+        [("changelog", "candidate", "candidate")] * 6
+        # ... and disagree on every one of these
+        + [("triage", "candidate", "baseline")] * 6
+    )
+    out = per_task_agreement(rows)
+    assert [row["task"] for row in out] == ["triage", "changelog"]  # worst first
+    assert out[0]["agreement"] == 0.0
+    assert out[1]["agreement"] == 1.0
+    # the overall number would read as merely mediocre and name no task
+    assert cohens_kappa([(j, h) for _, j, h in rows])["po"] == 0.5
+
+
+def test_per_task_kappa_is_suppressed_where_n_is_too_small():
+    rows = [("tiny", "candidate", "candidate"), ("tiny", "tie", "tie")]
+    row = per_task_agreement(rows)[0]
+    assert row["n"] == 2
+    assert row["low_n"] is True
+    assert row["kappa"] is None
+    assert row["kappa_band"] == "undefined"
+    assert row["status"] == "low_n"
+    assert row["agreement"] == 1.0  # plain agreement is still reported, flagged
+    assert row["min_n"] == PER_TASK_KAPPA_MIN_N
+
+
+def test_per_task_kappa_is_computed_once_there_are_enough_labels():
+    rows = [
+        ("t", "candidate", "candidate"),
+        ("t", "baseline", "baseline"),
+        ("t", "tie", "tie"),
+        ("t", "candidate", "baseline"),
+        ("t", "baseline", "candidate"),
+    ]
+    row = per_task_agreement(rows)[0]
+    assert row["n"] == 5 and row["low_n"] is False
+    assert row["kappa"] is not None
+    assert row["kappa_band"] == kappa_band(row["kappa"])
+    assert row["status"] == "computed"
+
+
+def test_per_task_kappa_stays_undefined_when_both_raters_used_one_category():
+    rows = [("t", "tie", "tie")] * 6
+    row = per_task_agreement(rows)[0]
+    assert row["agreement"] == 1.0
+    assert row["kappa"] is None  # agreeing on "tie" six times demonstrates nothing
+    assert row["status"] == "undefined_pe_1"
+
+
+def test_per_task_agreement_of_nothing_is_nothing():
+    assert per_task_agreement([]) == []

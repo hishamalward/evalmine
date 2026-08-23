@@ -22,6 +22,7 @@ from .metrics import (
     judge_category,
     latency_stats,
     median,
+    per_task_agreement,
     schema_pass_rate,
     seed_from_suite_hash,
     win_rate,
@@ -232,12 +233,14 @@ def _calibration(data: RunData) -> dict[str, Any]:
     }
 
     used: list[tuple[str, str]] = []
+    used_by_task: list[tuple[str, str, str]] = []
     ignored: list[dict[str, Any]] = []
     for label in data.suite.labels:
         key = _label_key(label.task, label.case, label.baseline, label.candidate)
         pair = scored.get(key)
         if pair is not None:
             used.append((judge_category(pair.score), label.prefer))
+            used_by_task.append((label.task, judge_category(pair.score), label.prefer))
             continue
         if key in excluded:
             ignored.append(
@@ -274,6 +277,10 @@ def _calibration(data: RunData) -> dict[str, Any]:
     result["n_labels_ignored"] = len(ignored)
     result["ignored_labels"] = ignored
     result["on_below_floor"] = data.suite.judge.calibration.on_below_floor
+    result["per_task_agreement"] = [
+        {**row, "agreement": _r(row["agreement"]), "kappa": _r(row["kappa"])}
+        for row in per_task_agreement(used_by_task)
+    ]
     return result
 
 
@@ -636,6 +643,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         row = cal["confusion"][human]
         add(f"| **{human}** | {row['baseline']} | {row['candidate']} | {row['tie']} |")
     add("")
+    add(_render_per_task_agreement(cal))
 
     # 3. win-rates
     title = "Win-rates" if eligible else "Win-rates (UNCALIBRATED - not a headline)"
@@ -785,6 +793,35 @@ def render_markdown(report: dict[str, Any]) -> str:
     add("```markdown")
     add(report["decision_log_entry"])
     add("```")
+    add("")
+    return "\n".join(lines)
+
+
+def _render_per_task_agreement(cal: dict[str, Any]) -> str:
+    """The S7.4 per-task breakdown (added 2026-08-23), worst first."""
+    lines: list[str] = []
+    add = lines.append
+    rows = cal.get("per_task_agreement") or []
+    add("Per-task agreement (judge vs your labels), worst first:")
+    add("")
+    if not rows:
+        add("No labels matched a scored pair in this run, so there is nothing to break out.")
+        add("")
+        return "\n".join(lines)
+    add("| task | labels | agreed | agreement | kappa |")
+    add("|---|---|---|---|---|")
+    for row in rows:
+        if row["low_n"]:
+            kappa_text = f"n/a (n<{row['min_n']})"
+        else:
+            kappa_text = format_kappa(row["kappa"])
+        add(f"| `{row['task']}` | {row['n']} | {row['agree']} | "
+            f"{_pct(row['agreement'])} | {kappa_text} |")
+    add("")
+    add("An overall kappa can hide a judge tuned to one task's taste and silently failing "
+        "another's; this is where that shows. Kappa is suppressed below "
+        f"{rows[0]['min_n']} labels on a task, where it would be noise - those rows carry "
+        "plain agreement only, and plain agreement over three labels is not evidence.")
     add("")
     return "\n".join(lines)
 
