@@ -37,9 +37,16 @@ The pre-ruling shortlist was `nof1bench` (from the clinical *n-of-1 trial*),
 `swapjudge` (rejected: names the mechanism, not the thesis). The ruling replaced
 `nof1bench`, which this document was originally written against.
 
-**Open, before publishing:** the availability of `evalmine` on PyPI and GitHub
-has not been re-checked since the ruling. Check both before the first release;
-until then no name is reserved.
+**Re-checked 2026-08-23 (round 2):** `evalmine` is still free.
+`https://pypi.org/pypi/evalmine/json` returns 404 (no such distribution).
+`gh api "search/repositories?q=evalmine+in:name"` returns `total_count: 0` (no
+GitHub repository named `evalmine`, under any owner), and a web search for
+`"evalmine" github repository` surfaces no meaningful collision - only
+unrelated eval-tooling repos (`openai/evals`, `mlfoundations/evalchemy`,
+etc.) and an unrelated `evalmee` GitHub organisation, none of which share the
+name. No name is reserved by this check alone; re-check both again
+immediately before the first release, since a check made during development
+can go stale.
 
 ### 1.2 Clean-room statement
 
