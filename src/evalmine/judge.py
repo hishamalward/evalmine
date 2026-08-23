@@ -11,8 +11,9 @@ live; that keeps the protocol testable against a double that spends nothing.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from .metrics import schema_verdict, score_pair
 from .suite import JudgeConfig, Task
@@ -58,6 +59,7 @@ class JudgeCall:
 
     text: str
     cost: float | None = None
+    cost_if_uncached: float | None = None
     cached: bool = False
     latency_ms: int = 0
     input_tokens: int | None = None
@@ -74,6 +76,7 @@ class PassResult:
     retried: bool = False
     cached: bool = False
     cost: float | None = None
+    cost_if_uncached: float | None = None
     latency_ms: int = 0
 
 
@@ -91,6 +94,7 @@ class PairResult:
     passes: list[PassResult] = field(default_factory=list)
     judge_calls: int = 0
     judge_cost: float = 0.0
+    judge_cost_if_uncached: float = 0.0
     judge_cached_calls: int = 0
     judge_latencies: list[int] = field(default_factory=list)
 
@@ -167,6 +171,9 @@ class Judge:
         for attempt in (0, 1):
             call = self.call(prompt=prompt, system=JUDGE_SYSTEM, bypass_cache=attempt == 1)
             result.cost = (result.cost or 0.0) + (call.cost or 0.0)
+            result.cost_if_uncached = (result.cost_if_uncached or 0.0) + (
+                call.cost_if_uncached if call.cost_if_uncached is not None else (call.cost or 0.0)
+            )
             result.cached = call.cached and attempt == 0
             result.latency_ms += call.latency_ms
             verdict = schema_verdict(call.text, JUDGE_SCHEMA)
@@ -213,6 +220,7 @@ class Judge:
             # a retried pass cost two calls, whether or not the retry parsed
             pair.judge_calls += 2 if result.retried else 1
             pair.judge_cost += result.cost or 0.0
+            pair.judge_cost_if_uncached += result.cost_if_uncached or 0.0
             pair.judge_cached_calls += int(result.cached)
             pair.judge_latencies.append(result.latency_ms)
 

@@ -10,8 +10,9 @@ import json
 import math
 import random
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import jsonschema
 

@@ -149,6 +149,9 @@ class FakeAdapter:
         self.calls = 0
         self.seen: list[Request] = []
 
+    def schema_mode_for(self, schema: dict[str, Any] | None) -> str:
+        return self.schema_mode if schema is not None else "prompted"
+
     # -- injection ---------------------------------------------------------
 
     def _next_failure(self, req: Request) -> FakeFailure | None:

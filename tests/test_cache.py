@@ -91,7 +91,7 @@ def test_the_key_ignores_the_date_run_id_suite_and_environment(monkeypatch):
 
 def test_canonical_encoding_is_stable_and_sorted():
     encoded = canonical_bytes({"b": 1, "a": {"d": 2, "c": [3, "é"]}})
-    assert encoded == '{"a":{"c":[3,"é"],"d":2},"b":1}'.encode("utf-8")
+    assert encoded == '{"a":{"c":[3,"é"],"d":2},"b":1}'.encode()
     # key ordering in the input does not matter
     assert cache_key(answer_payload(**BASE)) == cache_key(
         dict(reversed(list(answer_payload(**BASE).items())))

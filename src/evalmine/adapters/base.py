@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 #: Retries, spec S10: timeouts, 429 and 5xx only. A non-retryable error (401,
 #: 400) fails the run immediately - a missing key should stop you in the first
@@ -63,6 +64,14 @@ class Adapter(Protocol):
     version: int
 
     def complete(self, req: Request) -> Response: ...
+
+    def schema_mode_for(self, schema: dict[str, Any] | None) -> str:
+        """Which mode this adapter will use for a request carrying ``schema``.
+
+        Declared up front rather than reported afterwards because the mode is
+        part of the cache key (S6.5), and the key has to exist before the call.
+        """
+        ...
 
 
 def split_model(model: str) -> tuple[str, str]:
