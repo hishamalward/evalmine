@@ -1,5 +1,7 @@
 # How evalmine works
 
+A styled, browser-readable rendering of this file lives at [docs/how-it-works.html](../how-it-works.html).
+
 For whoever owns this next, including me in six months. It assumes the README and aims
 to let you defend every number without opening the code. [docs/spec.md](../spec.md) is
 the contract; this is the tour.

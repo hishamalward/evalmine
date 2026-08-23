@@ -44,7 +44,7 @@ real run on a real forty-task suite — see [Not yet](#not-yet).
 
 Specification: [docs/spec.md](docs/spec.md). It is the contract the code is written
 against and it wins over this README wherever the two disagree.
-How it works, in depth: [docs/learning/how-it-works.md](docs/learning/how-it-works.md).
+How it works, in depth: [docs/learning/how-it-works.md](docs/learning/how-it-works.md) ([styled HTML rendering](docs/how-it-works.html)).
 
 ## Quickstart
 
