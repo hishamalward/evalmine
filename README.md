@@ -156,8 +156,8 @@ Replace the example with your own tasks. That is the entire point of the tool.
 
 ## How to read a report
 
-`reports/<suite>/<run-id>/report.md` alongside `report.json`, `answers.jsonl` and
-`pairs.jsonl`. Read it in this order.
+`reports/<suite>/<run-id>/report.md` alongside `report.json`, `report.html`,
+`answers.jsonl` and `pairs.jsonl`. Read it in this order.
 
 **1. Calibration, first.** It is printed above the win-rates on purpose. You want
 Cohen's kappa between the judge's verdicts and your labels, with its Landis-Koch band
@@ -165,7 +165,9 @@ name attached, and the 3x3 confusion matrix under it. Kappa rather than plain
 agreement because agreement is inflated the moment one category dominates, and it
 will: judges learn that ties are safe. The matrix tells you *how* the judge is wrong,
 which matters — a judge that never says "tie" when you do is a different problem from
-one that systematically prefers whatever is new.
+one that systematically prefers whatever is new. Under it, a per-task breakdown tells
+you *where*: one kappa can hide a judge that is excellent on your rewrite task and
+useless on your triage task, and the average is the finding you would lose.
 
 **2. A win-rate you should not trust.** Three conditions, any one of which is enough:
 
@@ -201,6 +203,15 @@ latency with their `n`, cost this run and cost if uncached. A candidate that win
 **4. The per-task table, sorted worst-first.** A headline win-rate that did not move
 while three tasks moved 0.4 in opposite directions is the finding you would otherwise
 miss. `evalmine compare A B` prints exactly those movers between two runs.
+
+**5. `report.html`, and the labelling flow.** Every run also writes one
+self-contained page — no server, no dependencies, opens off a `file://` path. Same
+sections, plus each judged pair side by side with **the model names hidden and the
+judge's verdict folded away**, so you read the answers exactly as the judge read
+them. *Prefer A · Tie · Prefer B* under each one, then **copy labels YAML** hands you
+the `labels:` entries to paste back into your suite: ten minutes of clicking instead
+of half an hour of hand-editing, which is the difference between a calibration set
+that grows and one that does not.
 
 The report contains no adjectives and makes no recommendation. Judgement goes in
 [DECISIONS.md](DECISIONS.md), written by a person — the report pre-fills the template

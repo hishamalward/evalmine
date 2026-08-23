@@ -988,6 +988,38 @@ It is the fastest way to see *how* the judge is wrong — a judge that never say
 "tie" when you do is a different problem from one that systematically prefers the
 new model.
 
+**Per-task agreement (added 2026-08-23).** The overall kappa says *how much* the
+judge agrees with you. It does not say *where* it stops. A judge tuned to one
+task's taste can be excellent at that task and useless at the next one, and a
+single number averages the second finding away. So alongside the overall kappa,
+`calibration.per_task_agreement` carries one row per task that has at least one
+usable label:
+
+| Field | Meaning |
+|---|---|
+| `task` | task id |
+| `n` | labels on this task that matched a scored pair |
+| `agree` | of those, how many the judge got right |
+| `agreement` | `agree / n` — plain agreement, never a substitute for kappa |
+| `kappa` | Cohen's kappa for this task, or `null` when `n < min_n` |
+| `kappa_band` | the §7.4 band name, `undefined` when kappa is null |
+| `low_n` | `true` when kappa was suppressed for want of labels |
+| `min_n` | the suppression threshold, **default 5** |
+| `status` | `computed` · `low_n` · `undefined_pe_1` |
+| `confusion` | this task's 3×3 matrix |
+
+Rows are sorted by `agreement` ascending — worst first, the same discipline as
+the per-task win-rate table of §9.2: the task the judge is furthest from you on
+is the first row on screen.
+
+Kappa is suppressed below `min_n` rather than printed small, because a
+chance-corrected statistic over three observations is a number with a decimal
+point and no content, and printing one invites it to be quoted. Those rows carry
+plain agreement, flagged, and plain agreement over three labels is not evidence
+either — it is a prompt to go label that task some more. The same rows are
+rendered in `report.md` under the confusion matrix and in `report.html`, with
+the same field names.
+
 ---
 
 ## 8. Calibration floor
@@ -1035,10 +1067,15 @@ first suite is not what ends up in a blog post.
 ```
 reports/<suite>/<run-id>/report.json     the record; every number in report.md
 reports/<suite>/<run-id>/report.md       the human view, rendered from the JSON
+reports/<suite>/<run-id>/report.html     the browser view + the labelling surface (S9.5)
 reports/<suite>/<run-id>/answers.jsonl   one line per answer (text + usage)
 reports/<suite>/<run-id>/pairs.jsonl     one line per pair (both passes + reasons)
 reports/<suite>/latest.json              {"run_id": "...", "path": "..."}
 ```
+
+`report.html` is written by `run` (added 2026-08-23), not by `evalmine report`:
+it embeds the answers themselves, which `report.json` does not carry, so it is
+built from the run rather than re-rendered from the record.
 
 `run-id = <UTC yyyymmddThhmmssZ>_<suite_hash[:8]>_<models_hash[:8]>` where
 `suite_hash = sha256(raw suite file bytes)` and
@@ -1053,8 +1090,9 @@ included — changes the id, which is the intent.
    judge model, date, tool version, price table file, cache hit rate,
    `live_fraction`, total cost split answers/judge.
 2. **Calibration** — status, kappa, plain agreement, `n` labels used, `n` labels
-   ignored and why, the 3×3 confusion matrix, and the banner if not eligible.
-   Deliberately above the win-rates.
+   ignored and why, the 3×3 confusion matrix, the §7.4 per-task agreement table
+   (added 2026-08-23), and the banner if not eligible. Deliberately above the
+   win-rates.
 3. **Win-rates** — one row per candidate: win-rate, CI, `n`, consistent
    wins/losses, ties, soft wins/losses, **flip rate**, excluded pairs.
 4. **Per-model scorecard** — schema-pass rate (with `schema_mode`), parse fails,
@@ -1113,6 +1151,48 @@ it — this is the one artefact a human must author):
 - **What would change this:** <the result that would reverse the decision>
 - **Not measured:** <what this suite does not cover that the decision assumes>
 ```
+
+### 9.5 `report.html` and the labelling flow (added 2026-08-23)
+
+One self-contained file per run: inline CSS, inline JS, no external asset, no
+framework, no network call, light and dark from `prefers-color-scheme` with the
+full token set defined in both. It opens off a `file://` path and it will still
+open in five years, which is the whole reason it has no dependencies. Wide
+tables scroll inside their own container; long answers scroll inside their pane;
+the page body never scrolls sideways. Every string in it — answers included — is
+HTML-escaped, because an answer is untrusted text.
+
+It carries the §9.2 sections in the same order, and then the two things markdown
+cannot do.
+
+**Side-by-side answer pairs.** For each judged pair: the task prompt (folded),
+and answer A and answer B in two columns. **The model names are hidden by
+default**, behind a "reveal models" toggle, and so is the judge's verdict and
+its one-line reason. You read the answers exactly as the judge read them —
+blind. Reading "this one is from the new model" first is how a calibration set
+ends up recording your expectations instead of your judgement, and a calibration
+set that records your expectations makes kappa a measure of nothing.
+
+Which answer lands in slot A is **randomised per pair, seeded from the pair id**
+— `sha256(task|case|baseline|candidate)` — so it is stable across reloads and
+across regenerations of the same run, and a half-finished labelling session
+picks up where it left off instead of silently swapping sides underneath you.
+
+**The labelling flow.** Under each pair: *Prefer A* · *Tie* · *Prefer B*, and an
+optional one-line "why". A sticky footer counts progress and offers **copy
+labels YAML**, which emits exactly the §5.5 entries — `task`, `case`,
+`baseline`, `candidate`, `prefer`, `note` — ready to paste into the suite file.
+Selections persist in `localStorage`, keyed by run id, every read and write
+wrapped in `try`/`catch`; a browser with storage disabled loses persistence and
+nothing else. Nothing is sent anywhere: there is no server.
+
+**The mapping is computed in Python, not in the browser.** Going from "I clicked
+Prefer A" back to `prefer: baseline` or `prefer: candidate` is the one piece of
+this that can be wrong without anyone noticing — a flipped label does not crash,
+it quietly poisons the kappa the tool's credibility rests on. So the generator
+bakes a `{"A": ..., "B": ..., "tie": "tie"}` lookup table into each pair, and
+the page's JavaScript only reads that table. The function that builds it is a
+tested pure function; there is no untested mapping code anywhere in the feature.
 
 ---
 
