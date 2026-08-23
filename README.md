@@ -32,6 +32,11 @@ run 20260823T210009Z_c4545e4e_dbc76614  (everyday-eight)
 The fake adapter is deterministic, so those figures reproduce exactly on a clean
 checkout. Nothing above contacted a provider or spent a cent.
 
+![evalmine: validate the suite, run it against the fake adapter, read the calibration and win-rate sections of the report it wrote](docs/demo.gif)
+
+Every frame of that is a real run. Re-record it with `vhs docs/demo.tape`
+([vhs](https://github.com/charmbracelet/vhs), `brew install vhs`).
+
 **Status.** v0.1.0, pre-release. The core, the three real provider adapters and the
 MCP surface are built and tested; the price table has been verified against each
 provider's public pricing page on its pinned date. What has not happened yet is a
