@@ -203,7 +203,8 @@ while three tasks moved 0.4 in opposite directions is the finding you would othe
 miss. `evalmine compare A B` prints exactly those movers between two runs.
 
 The report contains no adjectives and makes no recommendation. Judgement goes in
-`DECISIONS.md`, written by a person — the report pre-fills the template for you.
+[DECISIONS.md](DECISIONS.md), written by a person — the report pre-fills the template
+for you at the bottom of every run.
 
 ## MCP
 
