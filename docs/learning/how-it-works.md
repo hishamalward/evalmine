@@ -21,12 +21,12 @@ MCP tools, stop. The first real result:
 
 ```mermaid
 flowchart TD
-    A["suite.yaml<br/>tasks · cases · judge · labels"] --> B["load_suite()<br/>schema-validate, render every {{var}}"]
+    A["suite.yaml<br/>tasks · cases · judge · labels"] --> B["load_suite()<br/>schema-validate, render every placeholder"]
     B --> C["resolve every model<br/>against the pinned price table"]
     C -->|unknown model| X([exit 1 · UnknownModelError])
     C --> D["plan: task × case × model × repeat<br/>content-hash a cache key for each"]
     D --> E["pre-flight estimate<br/>over uncached calls only"]
-    E -->|estimate > cap| Y([exit 4 · nothing spent])
+    E -->|estimate over cap| Y([exit 4 · nothing spent])
     E --> F{"cache hit?"}
     F -->|yes| G["answer, from disk · $0"]
     F -->|no| H["adapter.complete()<br/>retry 429/5xx/timeout, then cache"]
@@ -36,7 +36,7 @@ flowchart TD
     J -->|yes| K["excluded pair<br/>reason recorded · no judge call"]
     J -->|no| L["judge pass 1<br/>B first, C second"]
     J -->|no| M["judge pass 2<br/>C first, B second"]
-    L --> N["score_pair() → s ∈ {0, .25, .5, .75, 1}<br/>passes disagree = flip → 0.5"]
+    L --> N["score_pair() → s in 0 / .25 / .5 / .75 / 1<br/>passes disagree = flip → 0.5"]
     M --> N
     N --> O["win_rate = mean(s) · bootstrap CI<br/>schema-pass · p50/p95 · cost"]
     N --> P["cohens_kappa(judge, your labels)"]
