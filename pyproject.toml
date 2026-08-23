@@ -34,7 +34,7 @@ dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
 evalmine = "evalmine.cli:main"
-# evalmine-mcp is declared once src/evalmine/mcp_server.py exists (next round).
+evalmine-mcp = "evalmine.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/evalmine"]
