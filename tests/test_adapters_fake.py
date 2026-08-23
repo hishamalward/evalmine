@@ -172,9 +172,14 @@ def test_build_adapter_routes_everything_to_the_fake_when_asked():
     assert isinstance(build_adapter("fake"), FakeAdapter)
 
 
-def test_real_adapters_are_absent_from_this_build_and_say_so():
-    with pytest.raises(UnsupportedProviderError) as exc:
-        build_adapter("anthropic")
-    assert "--fake" in str(exc.value)
+def test_build_adapter_constructs_the_real_adapters():
+    from evalmine.adapters import AnthropicAdapter, GoogleAdapter, OpenAIAdapter
+
+    assert isinstance(build_adapter("anthropic"), AnthropicAdapter)
+    assert isinstance(build_adapter("openai"), OpenAIAdapter)
+    assert isinstance(build_adapter("google"), GoogleAdapter)
+
+
+def test_build_adapter_rejects_an_unknown_provider():
     with pytest.raises(UnsupportedProviderError):
         build_adapter("mystery")

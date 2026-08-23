@@ -1,11 +1,13 @@
 """Adapter registry.
 
-The three real HTTP adapters are not in this build; the fake one is, and
-``--fake`` routes every model string to it regardless of prefix (spec S4).
+``--fake`` routes every model string to the fake adapter regardless of prefix
+(spec S4); otherwise the provider prefix selects one of the three real HTTP
+adapters, each reading its key from the environment on construction.
 """
 
 from __future__ import annotations
 
+from .anthropic import AnthropicAdapter
 from .base import (
     Adapter,
     AdapterError,
@@ -16,14 +18,25 @@ from .base import (
     split_model,
 )
 from .fake import FakeAdapter, FakeFailure
+from .google import GoogleAdapter
+from .openai import OpenAIAdapter
 
 REAL_PROVIDERS = ("anthropic", "openai", "google")
+
+_REAL_ADAPTERS: dict[str, type] = {
+    "anthropic": AnthropicAdapter,
+    "openai": OpenAIAdapter,
+    "google": GoogleAdapter,
+}
 
 __all__ = [
     "Adapter",
     "AdapterError",
+    "AnthropicAdapter",
     "FakeAdapter",
     "FakeFailure",
+    "GoogleAdapter",
+    "OpenAIAdapter",
     "REAL_PROVIDERS",
     "Request",
     "Response",
@@ -37,13 +50,10 @@ __all__ = [
 def build_adapter(provider: str, fake: bool = False) -> Adapter:
     if fake or provider == "fake":
         return FakeAdapter()
-    if provider in REAL_PROVIDERS:
+    try:
+        return _REAL_ADAPTERS[provider]()
+    except KeyError:
         raise UnsupportedProviderError(
-            f"the {provider} adapter is not built in this version of evalmine. "
-            "Run with --fake to exercise the harness against the deterministic fake "
-            "adapter, or wait for the round that adds the provider adapters."
-        )
-    raise UnsupportedProviderError(
-        f"no adapter for provider {provider!r}; expected one of "
-        f"{REAL_PROVIDERS + ('fake',)}"
-    )
+            f"no adapter for provider {provider!r}; expected one of "
+            f"{REAL_PROVIDERS + ('fake',)}"
+        ) from None

@@ -73,8 +73,10 @@ def test_one_model_exits_one(tmp_path, capsys):
     assert code == 1
 
 
-def test_a_missing_real_adapter_exits_two(tmp_path, capsys):
-    """Without --fake there is no adapter in this build, and it says so."""
+def test_a_missing_key_for_a_real_adapter_exits_two(tmp_path, capsys, monkeypatch):
+    """Without --fake and without a key, the real adapter refuses immediately."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     code = run_cli(
         "run",
         str(EXAMPLE_SUITE),
@@ -88,7 +90,7 @@ def test_a_missing_real_adapter_exits_two(tmp_path, capsys):
         str(tmp_path / "reports"),
     )
     assert code == 2
-    assert "--fake" in capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
 
 
 def test_over_the_cap_exits_four_before_spending(tmp_path, capsys):

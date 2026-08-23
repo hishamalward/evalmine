@@ -7,11 +7,14 @@ in one sitting.
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+
+import httpx
 
 #: Retries, spec S10: timeouts, 429 and 5xx only. A non-retryable error (401,
 #: 400) fails the run immediately - a missing key should stop you in the first
@@ -72,6 +75,54 @@ class Adapter(Protocol):
         part of the cache key (S6.5), and the key has to exist before the call.
         """
         ...
+
+
+def status_is_retryable(status: int) -> bool:
+    """429 and 5xx are worth retrying; everything else fails fast (spec S10)."""
+    return status == 429 or status >= 500
+
+
+def post_json(
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout_s: int,
+    transport: httpx.BaseTransport | None,
+    provider: str,
+) -> tuple[dict[str, Any], int]:
+    """POST ``body`` as JSON, mapping every transport/HTTP failure onto ``AdapterError``.
+
+    Shared by all three real adapters - the one bit of HTTP boilerplate common
+    to a hand-written POST against a documented JSON endpoint. ``transport``
+    exists only so tests can substitute ``httpx.MockTransport``; production
+    code never passes it. Returns the parsed body and the wall-clock latency
+    of the call in milliseconds.
+    """
+    t0 = time.perf_counter()
+    try:
+        with httpx.Client(transport=transport, timeout=timeout_s) as client:
+            resp = client.post(url, headers=headers, json=body)
+    except httpx.TimeoutException as exc:
+        raise AdapterError(f"{provider} request timed out: {exc}", retryable=True) from exc
+    except httpx.TransportError as exc:
+        raise AdapterError(f"{provider} transport error: {exc}", retryable=True) from exc
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    if resp.status_code >= 400:
+        raise AdapterError(
+            f"{provider} error {resp.status_code}: {resp.text[:300]}",
+            retryable=status_is_retryable(resp.status_code),
+            status=resp.status_code,
+        )
+    try:
+        data = resp.json()
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise AdapterError(
+            f"{provider} returned a body that is not valid JSON: {exc}", retryable=False
+        ) from exc
+    if not isinstance(data, dict):
+        raise AdapterError(f"{provider} returned a non-object JSON body", retryable=False)
+    return data, latency_ms
 
 
 def split_model(model: str) -> tuple[str, str]:
