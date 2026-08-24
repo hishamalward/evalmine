@@ -107,6 +107,32 @@ def schema_pass_rate(verdicts: Iterable[SchemaVerdict | str]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# S6.6 execution checks
+# --------------------------------------------------------------------------
+
+
+def check_pass_rate(statuses: Iterable[str]) -> dict[str, Any]:
+    """Over answers that had a check: ``pass / (pass + fail + error)``.
+
+    ``error`` (the check's own setup failed) counts against the rate rather
+    than being dropped, so a broken fixture shows up as a number and not as a
+    silently smaller ``n``.
+    """
+    counts = {"pass": 0, "fail": 0, "error": 0}
+    for status in statuses:
+        if status in counts:
+            counts[status] += 1
+    total = sum(counts.values())
+    return {
+        "n": total,
+        "pass": counts["pass"],
+        "fail": counts["fail"],
+        "error": counts["error"],
+        "rate": (counts["pass"] / total) if total else None,
+    }
+
+
+# --------------------------------------------------------------------------
 # S6.2 latency
 # --------------------------------------------------------------------------
 

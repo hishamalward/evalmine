@@ -154,6 +154,26 @@ Three things about this file that are deliberate:
 
 Replace the example with your own tasks. That is the entire point of the tool.
 
+### Execution checks for code tasks
+
+Prose is a bad proxy for code that runs. A case can declare a `check`: a bash
+snippet that gets the answer's code (`$ANSWER` is a file, `$ANSWER_TEXT` the
+text) and exits 0 if it works. It runs in a fresh temp dir, under a timeout,
+with secrets stripped from the environment, and is never cached.
+
+```yaml
+- id: jq-remote
+  vars: { task: "Write a jq filter ... the JSON is in postings.json" }
+  check:
+    setup: 'printf "[{\"t\":\"a\",\"remote\":true}]" > postings.json'
+    run: 'jq -r "$(cat "$ANSWER")" postings.json | grep -q a'
+```
+
+The result — pass/fail, exit code, output — sits beside the answer in
+`answers.jsonl`, the scorecard, and the HTML pair view, and the judge is shown
+it with one fixed rule: an answer whose check failed cannot beat one that
+passed. Spec §6.6.
+
 ## How to read a report
 
 `reports/<suite>/<run-id>/report.md` alongside `report.json`, `report.html`,

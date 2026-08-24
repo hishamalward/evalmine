@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+
+from .check import DEFAULT_CHECK_TIMEOUT_S, CheckSpec
 import yaml
 
 SUITE_FORMAT_VERSION = 1
@@ -74,6 +76,8 @@ class Case:
     vars: dict[str, Any]
     prompt: str
     system: str | None
+    #: The execution check for this case (spec S6.6), task defaults already merged.
+    check: CheckSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +279,24 @@ def _load_labels(doc: dict[str, Any], path: Path) -> list[dict[str, Any]]:
     return list(doc.get("labels") or [])
 
 
+def _check_from(
+    task_level: dict[str, Any] | None, case_level: dict[str, Any] | None
+) -> CheckSpec | None:
+    """Merge a task's ``check`` defaults under a case's ``check``.
+
+    A task-level block usually carries ``setup`` and ``timeout_s`` shared by every
+    case; ``run`` is normally per case. No ``run`` after the merge means no check.
+    """
+    merged: dict[str, Any] = {**(task_level or {}), **(case_level or {})}
+    if not merged.get("run"):
+        return None
+    return CheckSpec(
+        run=merged["run"],
+        setup=merged.get("setup"),
+        timeout_s=int(merged.get("timeout_s", DEFAULT_CHECK_TIMEOUT_S)),
+    )
+
+
 def _load_task_schema(raw_task: dict[str, Any], path: Path) -> dict[str, Any] | None:
     if "schema" in raw_task:
         return raw_task["schema"]
@@ -348,7 +370,15 @@ def load_suite(path: str | Path) -> Suite:
                 if system_template is not None
                 else None
             )
-            cases.append(Case(id=cid, vars=dict(variables), prompt=prompt, system=system))
+            cases.append(
+                Case(
+                    id=cid,
+                    vars=dict(variables),
+                    prompt=prompt,
+                    system=system,
+                    check=_check_from(raw_task.get("check"), raw_case.get("check")),
+                )
+            )
 
         tasks.append(
             Task(

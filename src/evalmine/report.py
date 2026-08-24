@@ -17,6 +17,7 @@ from .metrics import (
     FLIP_RATE_WARNING,
     bootstrap_ci,
     calibration_status,
+    check_pass_rate,
     cohens_kappa,
     format_kappa,
     judge_category,
@@ -154,6 +155,18 @@ def build_report(data: RunData) -> dict[str, Any]:
             for a in answers
             if a.status == "error"
         ],
+        "check_failures": [
+            {
+                "task": a.task_id,
+                "case": a.case_id,
+                "model": a.model,
+                "status": a.check_status,
+                "exit_code": a.check_exit,
+                "output_head": (a.check_output or "").strip().splitlines()[:1],
+            }
+            for a in answers
+            if a.check_status in ("fail", "error")
+        ],
         "unparseable_judge_passes": [
             {"task": p.task_id, "case": p.case_id, "candidate": p.candidate, "order": q.order}
             for p in pairs
@@ -204,6 +217,9 @@ def _per_model(data: RunData) -> dict[str, Any]:
                 **schema_pass_rate([a.schema_status for a in schema_rows]),
                 "modes": sorted({a.schema_mode for a in schema_rows}) or None,
             },
+            "check": check_pass_rate(
+                [a.check_status for a in rows if a.check_status != "not_applicable"]
+            ),
             "latency": _round_latency(latency_stats(latencies, live)),
             "cost": {
                 "this_run_usd": _r(cost_this_run),
@@ -343,6 +359,9 @@ def _per_task(data: RunData, win_rates: dict[str, Any]) -> list[dict[str, Any]]:
             latencies = [a.latency_ms for a in model_rows if a.latency_ms is not None]
             models[model] = {
                 "schema": schema_pass_rate([a.schema_status for a in schema_rows]),
+                "check": check_pass_rate(
+                    [a.check_status for a in model_rows if a.check_status != "not_applicable"]
+                ),
                 "p50_ms": _r(median(latencies)),
                 "cost_if_uncached_usd": _r(sum(a.cost_if_uncached or 0.0 for a in model_rows)),
             }
@@ -352,6 +371,7 @@ def _per_task(data: RunData, win_rates: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": task.kind,
                 "judged": task.judge,
                 "has_schema": task.schema is not None,
+                "has_check": any(c.check is not None for c in task.cases),
                 "n_cases": len(task.cases),
                 "models": models,
                 "candidates": {
@@ -477,6 +497,9 @@ def diff_reports(
             continue
         models[model] = {
             "schema_pass": _delta(before["schema"].get("rate"), current["schema"].get("rate")),
+            "check_pass": _delta(
+                (before.get("check") or {}).get("rate"), (current.get("check") or {}).get("rate")
+            ),
             "p50_ms": _delta(before["latency"].get("p50_ms"), current["latency"].get("p50_ms")),
             "p95_ms": _delta(before["latency"].get("p95_ms"), current["latency"].get("p95_ms")),
             "cost_if_uncached_usd": _delta(
@@ -554,6 +577,13 @@ def decision_log_entry(report: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
+
+
+def _check_cell(check: dict[str, Any] | None) -> str:
+    """``n/a`` when no answer in the row had a check, else the pass rate with its n."""
+    if not check or not check.get("n"):
+        return "n/a"
+    return f"{_pct(check['rate'])} (n={check['n']})"
 
 
 def _pct(value: float | None, digits: int = 1) -> str:
@@ -681,9 +711,9 @@ def render_markdown(report: dict[str, Any]) -> str:
     # 4. per-model scorecard
     add("## Per-model scorecard")
     add("")
-    add("| model | role | schema pass | mode | parse fail | schema fail | p50 ms | p95 ms | "
-        "live | cost this run | cost if uncached | $/1k calls |")
-    add("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    add("| model | role | schema pass | mode | parse fail | schema fail | exec pass | "
+        "p50 ms | p95 ms | live | cost this run | cost if uncached | $/1k calls |")
+    add("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for model, row in report["per_model"].items():
         schema = row["schema"]
         latency = row["latency"]
@@ -691,7 +721,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         modes = ", ".join(schema["modes"]) if schema["modes"] else "-"
         p95 = f"{_num(latency['p95_ms'])} (n={latency['n']})"
         add(f"| `{model}` | {row['role']} | {_pct(schema['rate'])} | {modes} | "
-            f"{schema['parse_fail']} | {schema['schema_fail']} | {_num(latency['p50_ms'])} | "
+            f"{schema['parse_fail']} | {schema['schema_fail']} | "
+            f"{_check_cell(row.get('check'))} | {_num(latency['p50_ms'])} | "
             f"{p95} | {_pct(latency['live_fraction'])} | {_usd(cost['this_run_usd'])} | "
             f"{_usd(cost['if_uncached_usd'])} | {_usd(cost['per_1k_calls_usd'])} |")
     add("")
@@ -705,8 +736,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         "is the first thing on screen.")
     add("")
     header = ["task", "kind", "cases"]
+    show_check = any(row.get("has_check") for row in report["per_task"])
     for model in report["models"]:
         header.append(f"schema {model}")
+    if show_check:
+        for model in report["models"]:
+            header.append(f"exec {model}")
     for candidate in report["candidates"]:
         header.append(f"win {candidate}")
     header += ["p50 ms (baseline)", "cost if uncached"]
@@ -716,6 +751,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         cells = [f"`{row['task']}`", row["kind"] or "-", str(row["n_cases"])]
         for model in report["models"]:
             cells.append(_pct(row["models"][model]["schema"]["rate"]))
+        if show_check:
+            for model in report["models"]:
+                cells.append(_check_cell(row["models"][model].get("check")))
         for candidate in report["candidates"]:
             entry = row["candidates"][candidate]
             value = "n/a" if entry["win_rate"] is None else f"{entry['win_rate']:.2f}{dagger}"
@@ -741,7 +779,13 @@ def render_markdown(report: dict[str, Any]) -> str:
     add("## Failures and exclusions")
     add("")
     excluded = report["exclusions"]
-    if not excluded and not report["errors"] and not report["unparseable_judge_passes"]:
+    check_failures = report.get("check_failures") or []
+    if (
+        not excluded
+        and not report["errors"]
+        and not report["unparseable_judge_passes"]
+        and not check_failures
+    ):
         add("None.")
         add("")
     else:
@@ -757,6 +801,15 @@ def render_markdown(report: dict[str, Any]) -> str:
             add("")
             for item in report["errors"]:
                 add(f"- `{item['model']}` on `{item['task']}/{item['case']}`: {item['error']}")
+            add("")
+        if check_failures:
+            add("Execution check failures (S6.6):")
+            add("")
+            for item in check_failures:
+                head = item["output_head"][0] if item["output_head"] else ""
+                exit_code = "no exit code" if item["exit_code"] is None else f"exit {item['exit_code']}"
+                add(f"- `{item['model']}` on `{item['task']}/{item['case']}`: "
+                    f"{item['status']} ({exit_code}) {head}".rstrip())
             add("")
         if report["unparseable_judge_passes"]:
             add("Unparseable judge passes:")

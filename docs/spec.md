@@ -260,10 +260,12 @@ A task:
 | `rubric` | string | no | appended to the suite rubric for this task's pairs |
 | `judge` | bool | no | default `true`. `false` means schema/latency/cost only — no judge calls, no win-rate contribution |
 | `cases` | array | yes | ≥1 case |
+| `check` | object | no | execution-check defaults for every case (§6.6): `setup`, `timeout_s`, and optionally `run` |
 | *(any `defaults` key)* | | no | overrides the suite default |
 
-A case: `id` (string, unique within the task) and `vars` (object of string →
-scalar). A task with no placeholders may declare `vars: {}`.
+A case: `id` (string, unique within the task), `vars` (object of string →
+scalar), and optionally `check` (§6.6: `run`, plus `setup` / `timeout_s`
+overriding the task's). A task with no placeholders may declare `vars: {}`.
 
 **Templating** is deliberately not Jinja: exactly `{{name}}`, whitespace inside
 the braces allowed, substituted once, no expressions, no filters, no loops. A
@@ -841,6 +843,66 @@ skips the read and performs the write.
 
 ---
 
+### 6.6 Execution checks (added 2026-08-23)
+
+A code task judged on its prose rewards code that reads well and does not run.
+A case may therefore declare a **check**: a bash snippet that is handed the
+answer's code and exits `0` if the code satisfies the contract.
+
+```yaml
+- id: small-code-daily
+  kind: code
+  prompt: "{{task}}"
+  check:
+    timeout_s: 20                      # task-level defaults
+  cases:
+    - id: jq-remote-postings
+      vars: { task: "... the JSON is in postings.json ..." }
+      check:
+        setup: |                       # lays down fixtures in a fresh temp dir
+          cat > postings.json <<'EOF'
+          [ ... ]
+          EOF
+        run: |                         # exit 0 = pass
+          jq -r "$(cat "$ANSWER")" postings.json > out.txt
+          diff out.txt expected.txt
+```
+
+Exactly as computed:
+
+1. **Code extraction.** The first fenced block in the answer, whatever its
+   language tag, with the fences removed; an answer with no fence is used whole,
+   stripped. Nothing else — no "the second block looks more like code".
+2. **Environment.** A fresh temporary directory per answer, removed afterwards.
+   `ANSWER` is the path of a file holding the code, `ANSWER_TEXT` is the code
+   itself, `EVALMINE_CHECK=1`. Every environment variable whose name contains
+   `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` is stripped: what runs
+   is model-written code.
+3. **`setup`** runs first in that directory. A non-zero exit is recorded as
+   `error` — the fixture is broken, which says nothing about the answer — with
+   the output prefixed `setup failed:`.
+4. **`run`** then runs. Exit `0` → `pass`; anything else → `fail` with the exit
+   code. Exceeding `timeout_s` (default 30) → `fail` with no exit code. Combined
+   stdout and stderr (the last 4000 characters) are recorded with the answer.
+5. `check_pass_rate = pass / (pass + fail + error)` per model, per task, and
+   overall, over answers that had a check. `error` counts against the rate so a
+   broken fixture shows up as a number rather than as a quietly smaller `n`.
+
+Checks are **never cached**: they are local and cheap, and editing one must
+re-evaluate every answer without an API call. They run on cached answers too.
+
+A failed check is **not an exclusion** (contrast ruling O-3). The pair is still
+judged, and the judge is shown both results — status, exit code, output — under
+a fixed rule: *an answer whose check failed cannot beat an answer whose check
+passed; if both passed or both failed, decide on the rubric and on what the
+output shows.* The human sees the same in `report.html`, beside each answer.
+A check that ran is part of the record on every surface: `answers.jsonl`
+(`check_status`, `check_exit`, `check_output`), the scorecard, the per-task
+table, and the failures section.
+
+Checks need `bash` on `PATH`. They are the one place evalmine executes
+something it did not write; keep fixtures synthetic.
+
 ## 7. The judge
 
 ### 7.1 Protocol
@@ -853,7 +915,9 @@ For every pair — (task, case, baseline B, candidate C) — the judge is called
 
 The judge never sees a model name, a provider, a price, a latency, or which
 answer is the baseline. It sees the original task prompt, the suite rubric plus
-the task rubric, and the two answers. It is asked for JSON:
+the task rubric, the two answers, and — for a case with an execution check
+(§6.6) — each answer's check result, swapped along with the answers in pass 2.
+It is asked for JSON:
 
 ```json
 {"winner": "1" | "2" | "tie", "reason": "<one sentence>"}
@@ -1096,14 +1160,16 @@ included — changes the id, which is the intent.
 3. **Win-rates** — one row per candidate: win-rate, CI, `n`, consistent
    wins/losses, ties, soft wins/losses, **flip rate**, excluded pairs.
 4. **Per-model scorecard** — schema-pass rate (with `schema_mode`), parse fails,
-   schema fails, p50, p95 (with n), cost this run, cost if uncached,
-   cost per 1k calls.
-5. **Per-task table** — for each task: per-model schema pass, per-candidate
+   schema fails, execution-check pass rate with its `n` (§6.6), p50, p95
+   (with n), cost this run, cost if uncached, cost per 1k calls.
+5. **Per-task table** — for each task: per-model schema pass, per-model
+   execution-check pass (only when some task has a check), per-candidate
    win-rate and `n`, median latency, cost. Sorted by candidate win-rate ascending
    so the tasks the new model is worst at are the first thing on screen.
 6. **What changed** — §9.3, present only when a previous report exists.
 7. **Failures and exclusions** — every excluded pair with its reason; every
-   provider error; every unparseable judge response.
+   provider error; every failed or errored execution check with its exit code
+   and first output line; every unparseable judge response.
 8. **Reproduce** — the exact command, the price file, the cache directory, and a
    note of whether the run was live or cached.
 9. **Decision log entry** — the §9.4 template, pre-filled with this run's
@@ -1467,6 +1533,14 @@ win-rate, with the reason recorded, counted in `excluded_pairs`, and broken out
 by reason in the report. Schema-pass rate remains its own headline metric, and
 the win-rate is labelled "over schema-passing pairs only, n=…". See §7.2, §7.3,
 and §13.10.
+
+**O-4. Should a failed execution check be a loss, an exclusion, or evidence? →
+Evidence, with a rule.** (Added 2026-08-23, from the first real run: the code
+task was being judged on prose.) A pair is still judged when a check fails; the
+judge and the human both see the result and the output, and the judge is told
+a failed check cannot beat a passed one. Excluding would throw away the most
+informative pairs — the ones where one side works and the other does not — and
+an automatic loss would hide a check whose fixture is wrong. See §6.6.
 
 **The name** was ruled at the same time: `evalmine`, replacing `nof1bench`. See
 §1.1.

@@ -177,3 +177,65 @@ def test_prompt_carries_the_task_the_rubric_and_both_answers():
     prompt = build_prompt("Do the thing.", "The rubric.", "one", "two")
     for fragment in ("Do the thing.", "The rubric.", "=== ANSWER 1 ===", "=== ANSWER 2 ==="):
         assert fragment in prompt
+
+
+# --------------------------------------------------------------------------
+# S6.6 execution checks in the judge prompt
+# --------------------------------------------------------------------------
+
+PASSED = {"status": "pass", "exit_code": 0, "output": "ok-out"}
+FAILED = {"status": "fail", "exit_code": 1, "output": "boom"}
+
+
+def test_prompt_has_no_execution_section_without_checks():
+    assert "EXECUTION CHECK" not in build_prompt("t", "r", "one", "two")
+
+
+def test_prompt_carries_both_execution_results_and_the_rule():
+    prompt = build_prompt("t", "r", "one", "two", PASSED, FAILED)
+    assert "=== EXECUTION CHECK ===" in prompt
+    assert "Answer 1: PASS (exit 0)" in prompt
+    assert "ok-out" in prompt
+    assert "Answer 2: FAIL (exit 1)" in prompt
+    assert "boom" in prompt
+    assert "cannot beat" in prompt
+    assert prompt.index("=== ANSWER 2 ===") < prompt.index("=== EXECUTION CHECK ===")
+    assert prompt.index("=== EXECUTION CHECK ===") < prompt.index("=== YOUR VERDICT ===")
+
+
+def test_an_unchecked_side_is_labelled_not_checked():
+    prompt = build_prompt("t", "r", "one", "two", PASSED, None)
+    assert "Answer 2: not checked" in prompt
+
+
+def test_a_timed_out_check_has_no_exit_code_in_the_prompt():
+    prompt = build_prompt("t", "r", "one", "two", {"status": "fail", "exit_code": None, "output": ""}, None)
+    assert "Answer 1: FAIL\n" in prompt
+    assert "(no output)" in prompt
+
+
+def test_the_swapped_pass_swaps_the_checks_with_the_answers():
+    from evalmine.judge import Judge, JudgeCall
+    from evalmine.suite import CallParams, JudgeConfig, Task
+
+    prompts: list[str] = []
+
+    def call(prompt: str, system: str | None, bypass_cache: bool = False) -> JudgeCall:
+        prompts.append(prompt)
+        return JudgeCall(text='{"winner": "1", "reason": "r"}')
+
+    task = Task(
+        id="code", prompt_template="p", kind="code", schema=None, rubric=None,
+        judge=True, params=CallParams(), cases=(), hash="h",
+    )
+    judge = Judge(JudgeConfig(model="fake/judge", rubric="r"), call)
+    judge.judge_pair(
+        task=task, case_id="c", repeat=0, baseline="b", candidate="c",
+        baseline_prompt="p", baseline_text="base-text", candidate_text="cand-text",
+        baseline_check=PASSED, candidate_check=FAILED,
+    )
+    first, second = prompts
+    assert first.index("base-text") < first.index("cand-text")
+    assert "Answer 1: PASS (exit 0)" in first and "Answer 2: FAIL (exit 1)" in first
+    assert second.index("cand-text") < second.index("base-text")
+    assert "Answer 1: FAIL (exit 1)" in second and "Answer 2: PASS (exit 0)" in second

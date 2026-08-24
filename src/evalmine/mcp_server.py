@@ -125,6 +125,7 @@ def _summary_from_report(report: dict[str, Any]) -> dict[str, Any]:
                 "n_pairs": n_pairs,
                 "flip_rate": flip_rate,
                 "schema_pass": row["schema"]["rate"],
+                "check_pass": (row.get("check") or {}).get("rate"),
                 "p50_ms": row["latency"]["p50_ms"],
                 "p95_ms": row["latency"]["p95_ms"],
                 "cost_usd": row["cost"]["this_run_usd"],

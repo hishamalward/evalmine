@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from conftest import EXAMPLE_SUITE, SPEC
 
+from evalmine.check import CheckSpec
 from evalmine.suite import CallParams, SuiteError, load_suite, render
 
 
@@ -203,3 +204,45 @@ def test_bad_yaml_is_a_suite_error(tmp_path):
     path.write_text("suite: [unclosed\n", encoding="utf-8")
     with pytest.raises(SuiteError):
         load_suite(path)
+
+
+# --------------------------------------------------------------------------
+# S6.6 execution checks
+# --------------------------------------------------------------------------
+
+
+def test_a_case_check_merges_the_task_defaults(minimal_suite, write_suite):
+    minimal_suite["tasks"][0]["check"] = {"setup": "touch fixture", "timeout_s": 5}
+    minimal_suite["tasks"][0]["cases"][0]["check"] = {"run": "test -f fixture"}
+    suite = load_suite(write_suite(minimal_suite))
+    one, two = suite.tasks[0].cases
+    assert one.check == CheckSpec(run="test -f fixture", setup="touch fixture", timeout_s=5)
+    assert two.check is None  # task defaults alone, with no run, are not a check
+
+
+def test_a_task_level_run_applies_to_every_case(minimal_suite, write_suite):
+    minimal_suite["tasks"][0]["check"] = {"run": "true"}
+    suite = load_suite(write_suite(minimal_suite))
+    assert all(c.check == CheckSpec(run="true") for c in suite.tasks[0].cases)
+
+
+def test_a_case_can_override_the_task_run(minimal_suite, write_suite):
+    minimal_suite["tasks"][0]["check"] = {"run": "true", "timeout_s": 3}
+    minimal_suite["tasks"][0]["cases"][1]["check"] = {"run": "false"}
+    suite = load_suite(write_suite(minimal_suite))
+    one, two = suite.tasks[0].cases
+    assert one.check == CheckSpec(run="true", timeout_s=3)
+    assert two.check == CheckSpec(run="false", timeout_s=3)
+
+
+def test_a_check_with_an_unknown_key_is_rejected(minimal_suite, write_suite):
+    minimal_suite["tasks"][0]["cases"][0]["check"] = {"run": "true", "expect": "x"}
+    with pytest.raises(SuiteError):
+        load_suite(write_suite(minimal_suite))
+
+
+def test_a_check_changes_the_task_hash(minimal_suite, write_suite):
+    before = load_suite(write_suite(minimal_suite, "a.yaml")).tasks[0].hash
+    minimal_suite["tasks"][0]["cases"][0]["check"] = {"run": "true"}
+    after = load_suite(write_suite(minimal_suite, "b.yaml")).tasks[0].hash
+    assert before != after

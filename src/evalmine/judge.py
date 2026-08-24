@@ -24,6 +24,9 @@ JUDGE_SYSTEM = (
     "Reply with JSON only."
 )
 
+#: How much of each execution-check output the judge is shown.
+JUDGE_CHECK_OUTPUT_CHARS = 1500
+
 #: The judge is asked for exactly this. Passing it as a schema lets a provider
 #: that supports structured output enforce it, and lets the fake adapter answer
 #: in the right shape.
@@ -109,7 +112,41 @@ def compose_rubric(config: JudgeConfig, task: Task) -> str:
     return config.rubric.rstrip()
 
 
-def build_prompt(task_prompt: str, rubric: str, answer_one: str, answer_two: str) -> str:
+def _check_block(label: str, check: dict[str, Any] | None) -> str:
+    if check is None:
+        return f"{label}: not checked\n"
+    status = str(check.get("status", "")).upper()
+    exit_code = check.get("exit_code")
+    verdict = f"{status} (exit {exit_code})" if exit_code is not None else status
+    output = (check.get("output") or "").strip() or "(no output)"
+    if len(output) > JUDGE_CHECK_OUTPUT_CHARS:
+        output = "...\n" + output[-JUDGE_CHECK_OUTPUT_CHARS:]
+    return f"{label}: {verdict}\n{label} output:\n{output}\n"
+
+
+def execution_section(check_one: dict[str, Any] | None, check_two: dict[str, Any] | None) -> str:
+    """The execution-check section of the judge prompt; empty when neither answer had a check."""
+    if check_one is None and check_two is None:
+        return ""
+    return (
+        "=== EXECUTION CHECK ===\n"
+        "The code in each answer was run against the task's fixture. An answer whose "
+        "check FAILED cannot beat an answer whose check PASSED. If both passed or both "
+        "failed, decide on the rubric and on what the output shows.\n"
+        + _check_block("Answer 1", check_one)
+        + _check_block("Answer 2", check_two)
+        + "\n"
+    )
+
+
+def build_prompt(
+    task_prompt: str,
+    rubric: str,
+    answer_one: str,
+    answer_two: str,
+    check_one: dict[str, Any] | None = None,
+    check_two: dict[str, Any] | None = None,
+) -> str:
     """The judge prompt. Nothing in here identifies either model."""
     return (
         "Two answers were given to the task below. Decide which one is better "
@@ -122,7 +159,8 @@ def build_prompt(task_prompt: str, rubric: str, answer_one: str, answer_two: str
         f"{answer_one.rstrip()}\n\n"
         "=== ANSWER 2 ===\n"
         f"{answer_two.rstrip()}\n\n"
-        "=== YOUR VERDICT ===\n"
+        + execution_section(check_one, check_two)
+        + "=== YOUR VERDICT ===\n"
         'Reply with JSON only, in exactly this shape: {"winner": "1" | "2" | "tie", '
         '"reason": "<one sentence>"}. Ties are expected and are not a failure.'
     )
@@ -200,6 +238,8 @@ class Judge:
         baseline_prompt: str,
         baseline_text: str,
         candidate_text: str,
+        baseline_check: dict[str, Any] | None = None,
+        candidate_check: dict[str, Any] | None = None,
     ) -> PairResult:
         rubric = compose_rubric(self.config, task)
         pair = PairResult(
@@ -211,8 +251,14 @@ class Judge:
         )
 
         prompts = [
-            build_prompt(baseline_prompt, rubric, baseline_text, candidate_text),  # order 1
-            build_prompt(baseline_prompt, rubric, candidate_text, baseline_text),  # order 2
+            build_prompt(  # order 1
+                baseline_prompt, rubric, baseline_text, candidate_text,
+                baseline_check, candidate_check,
+            ),
+            build_prompt(  # order 2
+                baseline_prompt, rubric, candidate_text, baseline_text,
+                candidate_check, baseline_check,
+            ),
         ]
         for order, prompt in enumerate(prompts, start=1):
             result = self._one_pass(prompt, order)

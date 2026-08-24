@@ -108,6 +108,10 @@ def build_pair_view(data: RunData) -> list[dict[str, Any]]:
             "baseline": (base.schema_status if base else "n/a"),
             "candidate": (cand.schema_status if cand else "n/a"),
         }
+        checks = {
+            "baseline": (base.check_view if base else None),
+            "candidate": (cand.check_view if cand else None),
+        }
         label = labels.get((pair.task_id, pair.case_id, pair.baseline, pair.candidate))
         task = data.suite.task(pair.task_id)
         prompt = base.prompt if base else (cand.prompt if cand else "")
@@ -128,6 +132,8 @@ def build_pair_view(data: RunData) -> list[dict[str, Any]]:
                 "b_text": texts[roles[1]],
                 "a_schema_status": schema[roles[0]],
                 "b_schema_status": schema[roles[1]],
+                "a_check": checks[roles[0]],
+                "b_check": checks[roles[1]],
                 "a_error": errors[roles[0]] if not texts[roles[0]] else None,
                 "b_error": errors[roles[1]] if not texts[roles[1]] else None,
                 "excluded": pair.excluded,
@@ -684,10 +690,24 @@ def _pane(letter: str, pair: dict[str, Any]) -> str:
         if schema in ("parse_fail", "schema_fail")
         else ""
     )
+    check = pair.get(f"{letter.lower()}_check")
+    check_flag = ""
+    check_body = ""
+    if check is not None:
+        status = str(check.get("status", ""))
+        exit_code = check.get("exit_code")
+        verdict = status.upper() + (f" (exit {exit_code})" if exit_code is not None else "")
+        css = "ok" if status == "pass" else "bad"
+        check_flag = f'<span class="flag {css}">exec: {esc(verdict)}</span>'
+        output = (check.get("output") or "").strip() or "(no output)"
+        check_body = (
+            '<details class="prompt exec" open><summary>Execution output</summary>'
+            f"<pre>{esc(output)}</pre></details>"
+        )
     return (
-        f'<section class="pane"><h4>Answer {letter}{schema_flag}'
+        f'<section class="pane"><h4>Answer {letter}{schema_flag}{check_flag}'
         f'<span class="model reveal-inline"><code>{esc(model)}</code> '
-        f'<span class="role">({esc(role)})</span></span></h4>{body}</section>'
+        f'<span class="role">({esc(role)})</span></span></h4>{body}{check_body}</section>'
     )
 
 
@@ -746,7 +766,7 @@ def _pair_card(pair: dict[str, Any]) -> str:
         f'<article class="pair" id="pair-{esc(pair["pair_id"])}">'
         f'<header class="pair-head"><span class="pid"><code>{esc(pair["task"])}</code> / '
         f'<code>{esc(pair["case"])}</code></span>{kind}{"".join(flags)}</header>'
-        f'<details class="prompt"><summary>Task prompt</summary>'
+        f'<details class="prompt" open><summary>Task prompt</summary>'
         f'<pre>{esc(pair["prompt"])}</pre></details>'
         f'<div class="cols">{_pane("A", pair)}{_pane("B", pair)}</div>'
         f'<div class="verdict reveal-only"><ul class="meta">{verdict}</ul></div>'
@@ -784,14 +804,14 @@ _CSS = """
   --bg:#fbfbfa;--panel:#ffffff;--ink:#16181d;--muted:#5a616e;--line:#e3e5ea;
   --accent:#2f5fd0;--accent-ink:#ffffff;--chip:#eef1f7;
   --warn-bg:#fff5e6;--warn-line:#d99b2b;--warn-ink:#6a4300;
-  --bad:#b02a2a;--code:#f2f3f7;--shadow:0 1px 2px rgba(20,22,30,.07);
+  --bad:#b02a2a;--ok:#1f7a3a;--code:#f2f3f7;--shadow:0 1px 2px rgba(20,22,30,.07);
 }
 @media (prefers-color-scheme:dark){
   :root{
     --bg:#14161a;--panel:#1b1e24;--ink:#e6e8ec;--muted:#9aa3b2;--line:#2b3038;
     --accent:#7aa2f7;--accent-ink:#10131a;--chip:#252a33;
     --warn-bg:#3a2c14;--warn-line:#c08a30;--warn-ink:#f0d9a8;
-    --bad:#f07171;--code:#1f232a;--shadow:0 1px 2px rgba(0,0,0,.4);
+    --bad:#f07171;--ok:#5fc48a;--code:#1f232a;--shadow:0 1px 2px rgba(0,0,0,.4);
   }
 }
 *{box-sizing:border-box}
@@ -830,6 +850,7 @@ pre.cmd{background:var(--panel);border:1px solid var(--line);border-radius:6px;p
 .flag{font-size:.72rem;background:var(--chip);color:var(--muted);border-radius:999px;
   padding:.1rem .5rem;white-space:nowrap}
 .flag.bad{color:var(--bad)}
+.flag.ok{color:var(--ok)}
 .pair{background:var(--panel);border:1px solid var(--line);border-radius:8px;
   padding:.9rem 1rem;margin:1rem 0;box-shadow:var(--shadow)}
 .pair-head{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.5rem}

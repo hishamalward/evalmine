@@ -6,9 +6,11 @@ the fake adapter or to a double; nothing contacts a provider.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 from conftest import EXAMPLE_SUITE, PRICES_DIR
 
 from evalmine.adapters import FakeAdapter, FakeFailure, Request, Response
@@ -321,3 +323,102 @@ def test_repeats_multiply_the_pairs(tmp_path):
     result = run(tmp_path, repeats=2, max_cost=5.0)
     assert result.report["totals"]["answers"] == 80
     assert result.report["totals"]["pairs"] == 40
+
+
+# --------------------------------------------------------------------------
+# S6.6 execution checks, end to end on the fake adapter
+# --------------------------------------------------------------------------
+
+
+def _checked_suite(tmp_path):
+    example = yaml.safe_load(EXAMPLE_SUITE.read_text(encoding="utf-8"))
+    doc = {
+        "suite": "checked",
+        "version": 1,
+        "judge": example["judge"],
+        "tasks": [
+            {
+                "id": "code",
+                "kind": "code",
+                "prompt": "Write {{what}}.",
+                "check": {"timeout_s": 5},
+                "cases": [
+                    {
+                        "id": "passes",
+                        "vars": {"what": "a"},
+                        "check": {"run": 'test -s "$ANSWER" && echo ran-ok'},
+                    },
+                    {
+                        "id": "fails",
+                        "vars": {"what": "b"},
+                        "check": {"run": "echo broken >&2; exit 7"},
+                    },
+                    {"id": "unchecked", "vars": {"what": "c"}},
+                ],
+            }
+        ],
+    }
+    path = tmp_path / "checked.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_execution_checks_reach_the_answers_the_report_and_the_html(tmp_path):
+    result = run(tmp_path, suite_path=_checked_suite(tmp_path))
+    report = result.report
+
+    answers = {}
+    for line in (result.report_path.parent / "answers.jsonl").read_text().splitlines():
+        record = json.loads(line)
+        answers[(record["case"], record["model"])] = record
+    for model in MODELS:
+        passed = answers[("passes", model)]
+        assert passed["check_status"] == "pass"
+        assert passed["check_exit"] == 0
+        assert passed["check_output"] == "ran-ok"
+        failed = answers[("fails", model)]
+        assert failed["check_status"] == "fail"
+        assert failed["check_exit"] == 7
+        assert failed["check_output"] == "[stderr]\nbroken"
+        unchecked = answers[("unchecked", model)]
+        assert unchecked["check_status"] == "not_applicable"
+        assert unchecked["check_exit"] is None
+
+    for model in MODELS:
+        assert report["per_model"][model]["check"] == {
+            "n": 2, "pass": 1, "fail": 1, "error": 0, "rate": 0.5,
+        }
+        assert report["per_task"][0]["models"][model]["check"]["rate"] == 0.5
+    assert report["per_task"][0]["has_check"] is True
+    assert {(f["case"], f["model"]) for f in report["check_failures"]} == {
+        ("fails", m) for m in MODELS
+    }
+    assert report["check_failures"][0]["exit_code"] == 7
+
+    md = result.report_md_path.read_text(encoding="utf-8")
+    assert "exec pass" in md
+    assert "Execution check failures" in md
+    assert "50.0% (n=2)" in md
+
+    html = result.report_html_path.read_text(encoding="utf-8")
+    assert "exec: PASS (exit 0)" in html
+    assert "exec: FAIL (exit 7)" in html
+    assert "Execution output" in html
+    by_case = {p["case"]: p for p in result.pair_view}
+    assert by_case["passes"]["a_check"]["status"] == "pass"
+    assert by_case["unchecked"]["a_check"] is None
+
+
+def test_a_check_never_excludes_a_pair(tmp_path):
+    result = run(tmp_path, suite_path=_checked_suite(tmp_path))
+    assert result.report["totals"]["excluded_pairs"] == 0
+    assert result.report["totals"]["pairs"] == 3
+
+
+def test_an_unchecked_suite_reports_no_check_numbers(tmp_path):
+    result = run(tmp_path)
+    for model in MODELS:
+        assert result.report["per_model"][model]["check"]["n"] == 0
+        assert result.report["per_model"][model]["check"]["rate"] is None
+    assert result.report["check_failures"] == []
+    assert "Execution check failures" not in result.report_md_path.read_text(encoding="utf-8")

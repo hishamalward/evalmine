@@ -4,39 +4,96 @@
   "title": "evalmine suite",
   "type": "object",
   "additionalProperties": false,
-  "required": ["suite", "version", "judge", "tasks"],
-  "not": { "required": ["labels", "labels_path"] },
+  "required": [
+    "suite",
+    "version",
+    "judge",
+    "tasks"
+  ],
+  "not": {
+    "required": [
+      "labels",
+      "labels_path"
+    ]
+  },
   "properties": {
-    "suite": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
-    "version": { "type": "integer" },
-    "description": { "type": "string" },
-    "defaults": { "$ref": "#/$defs/params" },
+    "suite": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "version": {
+      "type": "integer"
+    },
+    "description": {
+      "type": "string"
+    },
+    "defaults": {
+      "$ref": "#/$defs/params"
+    },
     "limits": {
       "type": "object",
       "additionalProperties": false,
-      "properties": { "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 } }
+      "properties": {
+        "max_cost_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
     },
     "report": {
       "type": "object",
       "additionalProperties": false,
-      "properties": { "mover_threshold": { "type": "number", "minimum": 0, "maximum": 1 } }
+      "properties": {
+        "mover_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
     },
     "judge": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model", "rubric"],
+      "required": [
+        "model",
+        "rubric"
+      ],
       "properties": {
-        "model": { "$ref": "#/$defs/model_string" },
-        "rubric": { "type": "string", "minLength": 1 },
-        "max_tokens": { "type": "integer", "minimum": 1 },
-        "temperature": { "type": "number", "minimum": 0 },
+        "model": {
+          "$ref": "#/$defs/model_string"
+        },
+        "rubric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0
+        },
         "calibration": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "min_kappa": { "type": "number", "minimum": -1, "maximum": 1 },
-            "min_labels": { "type": "integer", "minimum": 0 },
-            "on_below_floor": { "type": "string", "enum": ["flag", "fail"] }
+            "min_kappa": {
+              "type": "number",
+              "minimum": -1,
+              "maximum": 1
+            },
+            "min_labels": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "on_below_floor": {
+              "type": "string",
+              "enum": [
+                "flag",
+                "fail"
+              ]
+            }
           }
         }
       }
@@ -44,76 +101,215 @@
     "tasks": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/task" }
+      "items": {
+        "$ref": "#/$defs/task"
+      }
     },
-    "labels": { "type": "array", "items": { "$ref": "#/$defs/label" } },
-    "labels_path": { "type": "string", "minLength": 1 }
+    "labels": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/label"
+      }
+    },
+    "labels_path": {
+      "type": "string",
+      "minLength": 1
+    }
   },
   "$defs": {
     "model_string": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
     },
-    "identifier": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
     "params": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "temperature": { "type": "number", "minimum": 0 },
-        "max_tokens": { "type": "integer", "minimum": 1 },
-        "timeout_s": { "type": "integer", "minimum": 1 },
-        "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
-        "stop": { "type": "array", "items": { "type": "string" } },
-        "system": { "type": "string" }
+        "temperature": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "top_p": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stop": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "system": {
+          "type": "string"
+        }
       }
     },
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "prompt", "cases"],
-      "not": { "required": ["schema", "schema_path"] },
+      "required": [
+        "id",
+        "prompt",
+        "cases"
+      ],
+      "not": {
+        "required": [
+          "schema",
+          "schema_path"
+        ]
+      },
       "properties": {
-        "id": { "$ref": "#/$defs/identifier" },
-        "prompt": { "type": "string", "minLength": 1 },
-        "system": { "type": "string" },
-        "kind": { "type": "string" },
-        "schema": { "type": "object" },
-        "schema_path": { "type": "string", "minLength": 1 },
-        "rubric": { "type": "string" },
-        "judge": { "type": "boolean" },
-        "cases": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/case" } },
-        "temperature": { "type": "number", "minimum": 0 },
-        "max_tokens": { "type": "integer", "minimum": 1 },
-        "timeout_s": { "type": "integer", "minimum": 1 },
-        "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
-        "stop": { "type": "array", "items": { "type": "string" } }
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "system": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "object"
+        },
+        "schema_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rubric": {
+          "type": "string"
+        },
+        "judge": {
+          "type": "boolean"
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/case"
+          }
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "top_p": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stop": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "check": {
+          "$ref": "#/$defs/check"
+        }
       }
     },
     "case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/identifier" },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
         "vars": {
           "type": "object",
           "additionalProperties": {
-            "type": ["string", "number", "boolean", "null"]
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
           }
+        },
+        "check": {
+          "$ref": "#/$defs/check"
         }
       }
     },
     "label": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["task", "case", "baseline", "candidate", "prefer"],
+      "required": [
+        "task",
+        "case",
+        "baseline",
+        "candidate",
+        "prefer"
+      ],
       "properties": {
-        "task": { "$ref": "#/$defs/identifier" },
-        "case": { "$ref": "#/$defs/identifier" },
-        "baseline": { "$ref": "#/$defs/model_string" },
-        "candidate": { "$ref": "#/$defs/model_string" },
-        "prefer": { "type": "string", "enum": ["baseline", "candidate", "tie"] },
-        "note": { "type": "string" }
+        "task": {
+          "$ref": "#/$defs/identifier"
+        },
+        "case": {
+          "$ref": "#/$defs/identifier"
+        },
+        "baseline": {
+          "$ref": "#/$defs/model_string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/model_string"
+        },
+        "prefer": {
+          "type": "string",
+          "enum": [
+            "baseline",
+            "candidate",
+            "tie"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "type": "string",
+          "minLength": 1
+        },
+        "setup": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     }
   }

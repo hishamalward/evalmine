@@ -20,6 +20,7 @@ from .adapters import Request, build_adapter, call_with_retries, split_model
 from .adapters.base import Adapter, AdapterError
 from .cache import DEFAULT_CACHE_DIR, Cache, answer_payload, cache_key, judge_payload
 from .html_report import build_pair_view, render_html
+from .check import CheckSpec, run_check
 from .judge import PROVIDER_ERROR as REASON_PROVIDER_ERROR
 from .judge import Judge, JudgeCall, PairResult, exclusion_reason
 from .metrics import (
@@ -102,6 +103,21 @@ class AnswerRecord:
     error: str | None = None
     schema_status: str = "not_applicable"
     schema_error: str | None = None
+    #: Execution check (S6.6): "pass" | "fail" | "error" | "not_applicable".
+    check_status: str = "not_applicable"
+    check_exit: int | None = None
+    check_output: str | None = None
+
+    @property
+    def check_view(self) -> dict[str, Any] | None:
+        """What the judge and the pair view are shown; None when there was no check."""
+        if self.check_status == "not_applicable":
+            return None
+        return {
+            "status": self.check_status,
+            "exit_code": self.check_exit,
+            "output": self.check_output or "",
+        }
 
     @property
     def usable(self) -> bool:
@@ -120,6 +136,9 @@ class AnswerRecord:
             "schema_status": self.schema_status,
             "schema_error": self.schema_error,
             "schema_mode": self.schema_mode,
+            "check_status": self.check_status,
+            "check_exit": self.check_exit,
+            "check_output": self.check_output,
             "latency_ms": self.latency_ms,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -143,6 +162,7 @@ class CallPlan:
     system: str | None
     key: str
     cached: bool = False
+    check: CheckSpec | None = None
 
 
 @dataclass
@@ -320,6 +340,7 @@ def run_suite(
                             prompt=case.prompt,
                             system=case.system,
                             key="",
+                            check=case.check,
                         )
                     )
 
@@ -615,6 +636,14 @@ def _run_one_answer(
     verdict = schema_verdict(record.text, plan.task.schema)
     record.schema_status = verdict.status
     record.schema_error = verdict.error
+
+    # S6.6: the check runs on cached answers too - it is local, cheap, and
+    # deliberately outside the cache so that editing a check re-evaluates.
+    if plan.check is not None and record.status == "ok":
+        result = run_check(plan.check, record.text)
+        record.check_status = result.status
+        record.check_exit = result.exit_code
+        record.check_output = result.output
     return record
 
 
@@ -783,6 +812,8 @@ def _judge_all_pairs(
                             baseline_prompt=case.prompt,
                             baseline_text=base.text,
                             candidate_text=cand.text,
+                            baseline_check=base.check_view,
+                            candidate_check=cand.check_view,
                         )
                     )
     return pairs
