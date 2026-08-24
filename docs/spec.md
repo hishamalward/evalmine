@@ -1188,7 +1188,7 @@ included — changes the id, which is the intent.
    numbers, in a copy-pasteable fenced block.
 
 The report contains no adjectives. No "impressively", no "surprisingly", no
-recommendation. Judgment goes in `DECISIONS.md`, written by a person.
+recommendation. Judgment goes in `DECISIONS.md`, worded from the owner's verdict.
 
 ### 9.3 "What changed"
 
