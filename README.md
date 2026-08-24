@@ -49,7 +49,7 @@ How it works, in depth: [docs/learning/how-it-works.md](docs/learning/how-it-wor
 ## Quickstart
 
 ```bash
-git clone <this repo> && cd evalmine
+git clone https://github.com/hishamalward/evalmine.git && cd evalmine
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"          # add ,mcp -> ".[dev,mcp]" for the MCP server
 ```
