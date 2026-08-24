@@ -37,13 +37,10 @@ checkout. Nothing above contacted a provider or spent a cent.
 Every frame of that is a real run. Re-record it with `vhs docs/demo.tape`
 ([vhs](https://github.com/charmbracelet/vhs), `brew install vhs`).
 
-**Status.** v0.1.0, pre-release. The core, the three real provider adapters and the
-MCP surface are built and tested; the price table has been verified against each
-provider's public pricing page on its pinned date. The first real run happened on
-2026-08-23 — a private suite of the author's own tasks, Claude Opus 5 against Claude
-Sonnet 5 — and was a shakedown: it fixed the Anthropic adapter for the Claude 5 models,
-added execution checks for code tasks, and produced no decision, because no pair had
-been labelled yet — see [Not yet](#not-yet).
+**Status.** v0.1.0, pre-release. The core, the three provider adapters, execution
+checks and the MCP surface are built and tested; the price table is verified against
+each provider's public pricing page on its pinned date. No decision-log entry exists
+yet — see [Not yet](#not-yet).
 
 Specification: [docs/spec.md](docs/spec.md). It is the contract the code is written
 against and it wins over this README wherever the two disagree.
@@ -162,7 +159,11 @@ Replace the example with your own tasks. That is the entire point of the tool.
 Prose is a bad proxy for code that runs. A case can declare a `check`: a bash
 snippet that gets the answer's code (`$ANSWER` is a file, `$ANSWER_TEXT` the
 text) and exits 0 if it works. It runs in a fresh temp dir, under a timeout,
-with secrets stripped from the environment, and is never cached.
+with secrets stripped from the environment, and is never cached. Every fenced
+block in the answer runs, in order, each on its own fixture; the final block is
+the verdict and the earlier ones are recorded beside it, so an answer that
+retracts a wrong block and writes a second one is scored on the second and
+shows the retraction.
 
 ```yaml
 - id: jq-remote
@@ -238,8 +239,8 @@ of half an hour of hand-editing, which is the difference between a calibration s
 that grows and one that does not.
 
 The report contains no adjectives and makes no recommendation. Judgement goes in
-[DECISIONS.md](DECISIONS.md), written by a person — the report pre-fills the template
-for you at the bottom of every run.
+[DECISIONS.md](DECISIONS.md), worded from your verdict — the report pre-fills the
+template for you at the bottom of every run.
 
 ## MCP
 
@@ -317,20 +318,9 @@ it: RAG or retrieval eval; agent or multi-turn trajectories; fine-tuning anythin
 web UI; anything hosted; more than three providers; rubric auto-generation; MCP tools
 beyond the three above.
 
-The first real run has happened: 2026-08-23, a private suite of the author's own
-tasks (36 cases, later trimmed to 18), Claude Opus 5 against Claude Sonnet 5, about
-$1.50 all in. It was a shakedown and it earned its keep. The Anthropic adapter did
-not survive first contact with the Claude 5 models — `temperature` is rejected there,
-and thinking is on by default, billed as output and counted against `max_tokens`, so
-three of the first eight answers had spent the whole answer budget before the first
-visible word. And the code task turned out to be judged on prose, which is where
-execution checks (spec §6.6) came from. The example suite in this repo is still
-invented, and every number in this README still comes from the fake adapter.
-
-What has still not happened is the thing that matters: **a labelled run producing a
-calibrated number and the first `DECISIONS.md` entry.** The shakedown's win-rate
-printed flagged, as it should have, because no pair had been labelled. That entry
-comes before any v0.1.0 tag.
+Every number in this README comes from the fake adapter on the invented example
+suite. No labelled run on a real suite has yet produced a calibrated number or a
+`DECISIONS.md` entry; that comes before any v0.1.0 tag.
 
 ## Development
 

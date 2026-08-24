@@ -217,9 +217,12 @@ def _per_model(data: RunData) -> dict[str, Any]:
                 **schema_pass_rate([a.schema_status for a in schema_rows]),
                 "modes": sorted({a.schema_mode for a in schema_rows}) or None,
             },
-            "check": check_pass_rate(
-                [a.check_status for a in rows if a.check_status != "not_applicable"]
-            ),
+            "check": {
+                **check_pass_rate(
+                    [a.check_status for a in rows if a.check_status != "not_applicable"]
+                ),
+                "multi_block": sum(1 for a in rows if len(a.check_blocks) > 1),
+            },
             "latency": _round_latency(latency_stats(latencies, live)),
             "cost": {
                 "this_run_usd": _r(cost_this_run),
@@ -359,9 +362,16 @@ def _per_task(data: RunData, win_rates: dict[str, Any]) -> list[dict[str, Any]]:
             latencies = [a.latency_ms for a in model_rows if a.latency_ms is not None]
             models[model] = {
                 "schema": schema_pass_rate([a.schema_status for a in schema_rows]),
-                "check": check_pass_rate(
-                    [a.check_status for a in model_rows if a.check_status != "not_applicable"]
-                ),
+                "check": {
+                    **check_pass_rate(
+                        [
+                            a.check_status
+                            for a in model_rows
+                            if a.check_status != "not_applicable"
+                        ]
+                    ),
+                    "multi_block": sum(1 for a in model_rows if len(a.check_blocks) > 1),
+                },
                 "p50_ms": _r(median(latencies)),
                 "cost_if_uncached_usd": _r(sum(a.cost_if_uncached or 0.0 for a in model_rows)),
             }
@@ -583,7 +593,10 @@ def _check_cell(check: dict[str, Any] | None) -> str:
     """``n/a`` when no answer in the row had a check, else the pass rate with its n."""
     if not check or not check.get("n"):
         return "n/a"
-    return f"{_pct(check['rate'])} (n={check['n']})"
+    cell = f"{_pct(check['rate'])} (n={check['n']}"
+    if check.get("multi_block"):
+        cell += f", {check['multi_block']} multi-block"
+    return cell + ")"
 
 
 def _pct(value: float | None, digits: int = 1) -> str:

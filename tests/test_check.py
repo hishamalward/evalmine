@@ -5,12 +5,29 @@ from __future__ import annotations
 
 import os
 
-from evalmine.check import CheckResult, CheckSpec, extract_code, run_check, summarize
+from evalmine.check import (
+    MAX_BLOCKS,
+    CheckResult,
+    CheckSpec,
+    extract_blocks,
+    extract_code,
+    run_check,
+    summarize,
+)
 
 
-def test_extract_code_prefers_the_first_fence():
+def test_extract_blocks_returns_every_fence_in_order():
     text = "Here you go:\n```bash\ngit log --oneline\n```\nand also\n```\nsecond\n```"
-    assert extract_code(text) == "git log --oneline"
+    assert extract_blocks(text) == ["git log --oneline", "second"]
+
+
+def test_extract_code_is_the_final_block():
+    text = "```bash\nwrong\n```\nWait, that is wrong. Use this:\n```bash\nright\n```"
+    assert extract_code(text) == "right"
+
+
+def test_empty_fences_are_ignored():
+    assert extract_blocks("```\n\n```\n```sh\nls\n```") == ["ls"]
 
 
 def test_extract_code_without_a_fence_is_the_whole_answer_stripped():
@@ -101,3 +118,42 @@ def test_long_output_keeps_the_tail():
 
 def test_not_applicable_summary():
     assert summarize(CheckResult(status="not_applicable")) == "not checked"
+
+
+def test_every_block_runs_and_the_final_one_is_the_verdict():
+    spec = CheckSpec(run='grep -q right "$ANSWER"')
+    text = "```bash\nwrong\n```\nWait, that is wrong:\n```bash\nright\n```"
+    result = run_check(spec, text)
+    assert result.status == "pass"
+    assert result.exit_code == 0
+    assert result.code == "right"
+    assert [b.status for b in result.blocks] == ["fail", "pass"]
+    assert [b.index for b in result.blocks] == [1, 2]
+    assert result.blocks[0].code == "wrong"
+    assert result.multi_block
+    assert summarize(result) == "PASS (exit 0) on block 2 of 2: FAIL, PASS"
+
+
+def test_a_retracted_correct_block_does_not_rescue_a_wrong_final_one():
+    spec = CheckSpec(run='grep -q right "$ANSWER"')
+    text = "```bash\nright\n```\nActually, better:\n```bash\nwrong\n```"
+    result = run_check(spec, text)
+    assert result.status == "fail"
+    assert [b.status for b in result.blocks] == ["pass", "fail"]
+
+
+def test_each_block_gets_its_own_fixture():
+    spec = CheckSpec(setup="test ! -e seen && touch seen", run="true")
+    text = "```\na\n```\n```\nb\n```\n```\nc\n```"
+    result = run_check(spec, text)
+    assert [b.status for b in result.blocks] == ["pass", "pass", "pass"]
+
+
+def test_only_the_last_max_blocks_run():
+    spec = CheckSpec(run="true")
+    text = "".join(f"```\nblock {i}\n```\n" for i in range(1, MAX_BLOCKS + 3))
+    result = run_check(spec, text)
+    assert len(result.blocks) == MAX_BLOCKS
+    assert result.blocks[0].index == 3
+    assert result.blocks[-1].index == MAX_BLOCKS + 2
+    assert result.code == f"block {MAX_BLOCKS + 2}"

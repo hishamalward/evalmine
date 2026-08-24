@@ -121,7 +121,19 @@ def _check_block(label: str, check: dict[str, Any] | None) -> str:
     output = (check.get("output") or "").strip() or "(no output)"
     if len(output) > JUDGE_CHECK_OUTPUT_CHARS:
         output = "...\n" + output[-JUDGE_CHECK_OUTPUT_CHARS:]
-    return f"{label}: {verdict}\n{label} output:\n{output}\n"
+    blocks = check.get("blocks") or []
+    history = ""
+    if len(blocks) > 1:
+        steps = ", ".join(
+            f"block {b.get('index')}: {str(b.get('status', '')).upper()}"
+            + (f" (exit {b['exit_code']})" if b.get("exit_code") is not None else "")
+            for b in blocks
+        )
+        history = (
+            f"{label} submitted {len(blocks)} code blocks; the verdict above is the final "
+            f"block's. In order: {steps}.\n"
+        )
+    return f"{label}: {verdict}\n{history}{label} output:\n{output}\n"
 
 
 def execution_section(check_one: dict[str, Any] | None, check_two: dict[str, Any] | None) -> str:
@@ -132,7 +144,10 @@ def execution_section(check_one: dict[str, Any] | None, check_two: dict[str, Any
         "=== EXECUTION CHECK ===\n"
         "The code in each answer was run against the task's fixture. An answer whose "
         "check FAILED cannot beat an answer whose check PASSED. If both passed or both "
-        "failed, decide on the rubric and on what the output shows.\n"
+        "failed, decide on the rubric and on what the output shows. An answer that "
+        "submitted several code blocks is judged on its final block, and the earlier "
+        "blocks are part of the answer: reaching a passing block after a failing one is "
+        "not the same as being right the first time.\n"
         + _check_block("Answer 1", check_one)
         + _check_block("Answer 2", check_two)
         + "\n"

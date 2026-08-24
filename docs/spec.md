@@ -843,7 +843,7 @@ skips the read and performs the write.
 
 ---
 
-### 6.6 Execution checks (added 2026-08-23)
+### 6.6 Execution checks
 
 A code task judged on its prose rewards code that reads well and does not run.
 A case may therefore declare a **check**: a bash snippet that is handed the
@@ -870,9 +870,11 @@ answer's code and exits `0` if the code satisfies the contract.
 
 Exactly as computed:
 
-1. **Code extraction.** The first fenced block in the answer, whatever its
-   language tag, with the fences removed; an answer with no fence is used whole,
-   stripped. Nothing else — no "the second block looks more like code".
+1. **Code extraction.** Every fenced block in the answer, whatever its language
+   tag, with the fences removed and empty blocks dropped; an answer with no fence
+   is one block, used whole, stripped. Each block runs on its own fresh fixture,
+   in order. Past five blocks only the last five run, and the record says so by
+   index.
 2. **Environment.** A fresh temporary directory per answer, removed afterwards.
    `ANSWER` is the path of a file holding the code, `ANSWER_TEXT` is the code
    itself, `EVALMINE_CHECK=1`. Every environment variable whose name contains
@@ -884,18 +886,28 @@ Exactly as computed:
 4. **`run`** then runs. Exit `0` → `pass`; anything else → `fail` with the exit
    code. Exceeding `timeout_s` (default 30) → `fail` with no exit code. Combined
    stdout and stderr (the last 4000 characters) are recorded with the answer.
-5. `check_pass_rate = pass / (pass + fail + error)` per model, per task, and
+5. **Verdict.** The final block's result is the answer's `check_status`,
+   `check_exit` and `check_output`. Every block that ran is recorded in order
+   under `check_blocks` (index, status, exit code, output). An answer that
+   retracts a wrong block and offers a second is scored on the second, and the
+   record shows it took two.
+6. `check_pass_rate = pass / (pass + fail + error)` per model, per task, and
    overall, over answers that had a check. `error` counts against the rate so a
    broken fixture shows up as a number rather than as a quietly smaller `n`.
+   `multi_block` counts the answers whose check ran more than one block.
 
 Checks are **never cached**: they are local and cheap, and editing one must
 re-evaluate every answer without an API call. They run on cached answers too.
 
 A failed check is **not an exclusion** (contrast ruling O-3). The pair is still
-judged, and the judge is shown both results — status, exit code, output — under
-a fixed rule: *an answer whose check failed cannot beat an answer whose check
-passed; if both passed or both failed, decide on the rubric and on what the
-output shows.* The human sees the same in `report.html`, beside each answer.
+judged, and the judge is shown both results — status, exit code, output, and for
+a multi-block answer the sequence of block verdicts — under a fixed rule: *an
+answer whose check failed cannot beat an answer whose check passed; if both
+passed or both failed, decide on the rubric and on what the output shows; an
+answer judged on its final block still carries its earlier blocks, and reaching
+a passing block after a failing one is not the same as being right the first
+time.* The human sees the same in `report.html`, beside each answer, block by
+block.
 A check that ran is part of the record on every surface: `answers.jsonl`
 (`check_status`, `check_exit`, `check_output`), the scorecard, the per-task
 table, and the failures section.
@@ -1052,7 +1064,7 @@ It is the fastest way to see *how* the judge is wrong — a judge that never say
 "tie" when you do is a different problem from one that systematically prefers the
 new model.
 
-**Per-task agreement (added 2026-08-23).** The overall kappa says *how much* the
+**Per-task agreement.** The overall kappa says *how much* the
 judge agrees with you. It does not say *where* it stops. A judge tuned to one
 task's taste can be excellent at that task and useless at the next one, and a
 single number averages the second finding away. So alongside the overall kappa,
@@ -1137,7 +1149,7 @@ reports/<suite>/<run-id>/pairs.jsonl     one line per pair (both passes + reason
 reports/<suite>/latest.json              {"run_id": "...", "path": "..."}
 ```
 
-`report.html` is written by `run` (added 2026-08-23), not by `evalmine report`:
+`report.html` is written by `run`, not by `evalmine report`:
 it embeds the answers themselves, which `report.json` does not carry, so it is
 built from the run rather than re-rendered from the record.
 
@@ -1155,7 +1167,7 @@ included — changes the id, which is the intent.
    `live_fraction`, total cost split answers/judge.
 2. **Calibration** — status, kappa, plain agreement, `n` labels used, `n` labels
    ignored and why, the 3×3 confusion matrix, the §7.4 per-task agreement table
-   (added 2026-08-23), and the banner if not eligible. Deliberately above the
+  , and the banner if not eligible. Deliberately above the
    win-rates.
 3. **Win-rates** — one row per candidate: win-rate, CI, `n`, consistent
    wins/losses, ties, soft wins/losses, **flip rate**, excluded pairs.
@@ -1218,7 +1230,7 @@ it — this is the one artefact a human must author):
 - **Not measured:** <what this suite does not cover that the decision assumes>
 ```
 
-### 9.5 `report.html` and the labelling flow (added 2026-08-23)
+### 9.5 `report.html` and the labelling flow
 
 One self-contained file per run: inline CSS, inline JS, no external asset, no
 framework, no network call, light and dark from `prefers-color-scheme` with the
@@ -1510,13 +1522,6 @@ tasks with labels, supplied after this spec is approved) comparing two model
 versions, producing the first report and the first `DECISIONS.md` entry. Until
 that exists, this is a tool that has never been used.
 
-*Status, 2026-08-23:* half done. The run happened — a private suite of 36 cases,
-`anthropic/claude-opus-5` against `anthropic/claude-sonnet-5`, $1.13 — and produced
-the first report. It also broke the Anthropic adapter twice on first contact with the
-Claude 5 models (§10: sampling parameters rejected; thinking on by default against the
-answer budget) and showed the code task being judged on prose, which became §6.6 and
-ruling O-4. No pair has been labelled, so there is no calibrated number and no
-decision-log entry yet; the shakedown entry in `DECISIONS.md` is marked inconclusive.
 
 ---
 
@@ -1543,12 +1548,13 @@ the win-rate is labelled "over schema-passing pairs only, n=…". See §7.2, §7
 and §13.10.
 
 **O-4. Should a failed execution check be a loss, an exclusion, or evidence? →
-Evidence, with a rule.** (Added 2026-08-23, from the first real run: the code
-task was being judged on prose.) A pair is still judged when a check fails; the
-judge and the human both see the result and the output, and the judge is told
-a failed check cannot beat a passed one. Excluding would throw away the most
-informative pairs — the ones where one side works and the other does not — and
-an automatic loss would hide a check whose fixture is wrong. See §6.6.
+Evidence, with a rule.** A pair is still judged when a check fails; the judge and
+the human both see the result and the output, and the judge is told a failed
+check cannot beat a passed one. Excluding would throw away the most informative
+pairs — the ones where one side works and the other does not — and an automatic
+loss would hide a check whose fixture is wrong. An answer with several code
+blocks is judged on its final block, with every earlier block on the record: the
+retraction is evidence too. See §6.6.
 
 **The name** was ruled at the same time: `evalmine`, replacing `nof1bench`. See
 §1.1.

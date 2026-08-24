@@ -305,3 +305,25 @@ def test_a_refusal_or_truncation_is_flagged_on_the_pane():
     assert "truncated: hit max_tokens" in truncated
     clean = _pane("A", {**base, "a_finish": "end_turn", "b_finish": "end_turn"})
     assert "flag bad" not in clean
+
+
+def test_a_multi_block_check_shows_the_sequence_and_every_output():
+    from evalmine.html_report import _pane
+
+    pane = _pane("A", {
+        "a_role": "baseline", "b_role": "candidate", "baseline": "m/a", "candidate": "m/b",
+        "a_text": "x", "b_text": "y", "a_error": None, "b_error": None,
+        "a_schema_status": "not_applicable", "b_schema_status": "not_applicable",
+        "a_finish": "end_turn", "b_finish": "end_turn",
+        "a_check": {
+            "status": "pass", "exit_code": 0, "output": "final-out",
+            "blocks": [
+                {"index": 1, "status": "fail", "exit_code": 1, "output": "first-out"},
+                {"index": 2, "status": "pass", "exit_code": 0, "output": "final-out"},
+            ],
+        },
+        "b_check": None,
+    })
+    assert "exec: PASS (exit 0) · 2 blocks: FAIL → PASS" in pane
+    assert "block 1: FAIL (exit 1)" in pane and "first-out" in pane
+    assert "block 2: PASS (exit 0)" in pane and "final-out" in pane

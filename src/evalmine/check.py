@@ -31,9 +31,13 @@ OUTPUT_TAIL_CHARS = 4000
 
 CHECK_STATUSES = ("pass", "fail", "error", "not_applicable")
 
-#: The first fenced block, whatever its language tag. An answer with no fence
-#: is used whole.
+#: Every fenced block, whatever its language tag. An answer with no fence is
+#: used whole.
 _FENCE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)\r?\n?```", re.S)
+
+#: An answer with more blocks than this has its earliest ones skipped; the
+#: final block is always run.
+MAX_BLOCKS = 5
 
 #: Environment variables the check's shell never sees.
 _SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
@@ -49,26 +53,53 @@ class CheckSpec:
 
 
 @dataclass(frozen=True)
+class BlockResult:
+    """One fenced block, run on its own fixture."""
+
+    index: int  # 1-based position of the block in the answer
+    status: str  # "pass" | "fail" | "error"
+    exit_code: int | None
+    output: str
+    code: str
+
+
+@dataclass(frozen=True)
 class CheckResult:
+    """The verdict is the final block's; ``blocks`` is every block that ran, in order.
+
+    A model that writes a wrong block, retracts it in prose and writes a second
+    one has answered with the second - and the record shows it got there on the
+    second try. Both facts travel to the judge and to the report.
+    """
+
     status: str  # "pass" | "fail" | "error" | "not_applicable"
     exit_code: int | None = None
     output: str = ""
     code: str = ""
+    blocks: tuple[BlockResult, ...] = ()
 
     @property
     def applicable(self) -> bool:
         return self.status != "not_applicable"
 
+    @property
+    def multi_block(self) -> bool:
+        return len(self.blocks) > 1
+
 
 NOT_APPLICABLE = CheckResult(status="not_applicable")
 
 
+def extract_blocks(text: str) -> list[str]:
+    """Every non-empty fenced block in order; an answer with none is one block, whole."""
+    blocks = [m.group(1).strip("\r\n") for m in _FENCE.finditer(text)]
+    blocks = [b for b in blocks if b.strip()]
+    return blocks or [text.strip()]
+
+
 def extract_code(text: str) -> str:
-    """The first fenced block if there is one, otherwise the whole answer, stripped."""
-    match = _FENCE.search(text)
-    if match:
-        return match.group(1).strip("\r\n")
-    return text.strip()
+    """The answer's final code block: what the check's verdict is about."""
+    return extract_blocks(text)[-1]
 
 
 def _looks_secret(name: str) -> bool:
@@ -131,9 +162,8 @@ def _combine(stdout: str, stderr: str) -> str:
     return text
 
 
-def run_check(spec: CheckSpec, text: str) -> CheckResult:
-    """Run one check against one answer. Never raises for anything the code did."""
-    code = extract_code(text)
+def _run_block(spec: CheckSpec, index: int, code: str) -> BlockResult:
+    """One block, one fresh directory, one fixture. Never raises for anything the code did."""
     workdir = tempfile.mkdtemp(prefix="evalmine-check-")
     try:
         answer_path = os.path.join(workdir, "answer")
@@ -143,23 +173,44 @@ def run_check(spec: CheckSpec, text: str) -> CheckResult:
         if spec.setup:
             setup = _sh(spec.setup, workdir, env, spec.timeout_s)
             if setup.exit_code != 0:
-                return CheckResult(
-                    "error", setup.exit_code, "setup failed:\n" + setup.output, code
+                return BlockResult(
+                    index, "error", setup.exit_code, "setup failed:\n" + setup.output, code
                 )
         outcome = _sh(spec.run, workdir, env, spec.timeout_s)
         if outcome.timed_out or outcome.exit_code is None:
-            return CheckResult("fail", None, outcome.output, code)
+            return BlockResult(index, "fail", None, outcome.output, code)
         status = "pass" if outcome.exit_code == 0 else "fail"
-        return CheckResult(status, outcome.exit_code, outcome.output, code)
+        return BlockResult(index, status, outcome.exit_code, outcome.output, code)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def run_check(spec: CheckSpec, text: str) -> CheckResult:
+    """Run the check on every code block in the answer; the final block is the verdict."""
+    blocks = extract_blocks(text)
+    first_index = 1
+    if len(blocks) > MAX_BLOCKS:
+        first_index = len(blocks) - MAX_BLOCKS + 1
+        blocks = blocks[-MAX_BLOCKS:]
+    results = tuple(
+        _run_block(spec, index, code) for index, code in enumerate(blocks, start=first_index)
+    )
+    final = results[-1]
+    return CheckResult(final.status, final.exit_code, final.output, final.code, results)
+
+
+def _verdict(status: str, exit_code: int | None) -> str:
+    label = status.upper()
+    return f"{label} (exit {exit_code})" if exit_code is not None else f"{label} (no exit code)"
+
+
 def summarize(result: CheckResult) -> str:
-    """One line: ``PASS (exit 0)`` / ``FAIL (exit 1)`` / ``FAIL (timed out)`` / ``ERROR``."""
+    """``PASS (exit 0)``; with several blocks, ``PASS (exit 0) on block 2 of 2: FAIL, PASS``."""
     if not result.applicable:
         return "not checked"
-    label = result.status.upper()
-    if result.exit_code is None:
-        return f"{label} (no exit code)"
-    return f"{label} (exit {result.exit_code})"
+    head = _verdict(result.status, result.exit_code)
+    if not result.multi_block:
+        return head
+    n = len(result.blocks)
+    sequence = ", ".join(b.status.upper() for b in result.blocks)
+    return f"{head} on block {result.blocks[-1].index} of {n}: {sequence}"

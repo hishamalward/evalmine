@@ -16,10 +16,10 @@ cost from a price table pinned to a date, and a pairwise judge win-rate against 
 baseline — then measures the judge against my own labels, refusing to headline the
 win-rate when it cannot show the judge agrees with me. It deliberately does no RAG eval,
 no multi-turn trajectories, no fine-tuning, no UI, nothing hosted; three providers, three
-MCP tools, stop. The first real run, 2026-08-23, was a shakedown — 36 of my own cases,
-Claude Opus 5 against Claude Sonnet 5, $1.13 — and its most useful number was **3 of
-8**: the answers in the first batch that had spent their whole 900-token budget on
-thinking the harness could not see (commit `cf88afc`).
+MCP tools, stop. On the example suite against the fake adapter, the number it refuses
+to headline is **0.463**: a win-rate over 20 pairs whose judge scored kappa 0.25
+against the twelve labels, below the 0.40 floor, so it prints flagged — reproducible on
+a clean checkout, and the README shows the run.
 
 ## One run
 
@@ -99,23 +99,26 @@ change by breaking rather than by upgrading.
 Omits `temperature` and `top_p` for Opus 4.7 and everything after it (the API returns
 400 otherwise), sends `thinking: {type: disabled}` where the API would default it on,
 and turns a text-less `max_tokens` stop into an empty answer instead of a fatal error.
-*Why:* the suite's `max_tokens` is an answer budget. On the first real run three of the
-first eight answers had spent it on thinking that the usage response does not itemise,
-and the ninth returned no text at all; the model comparison was over before it started.
+*Why:* the suite's `max_tokens` is an answer budget. With thinking on, a model can spend
+the whole budget before its first visible word, and the usage response does not itemise
+thinking tokens, so nothing in the report would say why an answer came back short or
+empty.
 
 **`metrics.py` · `schema_verdict()`.** `json.loads` the whole response, else the first
 fenced block, else give up: `pass`, `schema_fail`, `parse_fail`. *Why:* no brace-matching,
 no repair, no retry, because a model that cannot emit JSON on request is telling you
 something the harness should report rather than launder.
 
-**`check.py` · `extract_code()` / `run_check()`.** The first fenced block (else the whole
-answer) is written to a file in a fresh temporary directory with every secret stripped
-from the environment; `setup` lays down the fixture, `run` executes under a timeout,
-exit 0 is a pass; never cached. *Why:* a code task judged on prose is judged on how the
+**`check.py` · `extract_blocks()` / `run_check()`.** Every fenced block (else the whole
+answer) is written to a file in its own fresh temporary directory with every secret
+stripped from the environment; `setup` lays down the fixture, `run` executes under a
+timeout, exit 0 is a pass. The final block is the verdict and the earlier ones are
+recorded in order; never cached. *Why:* a code task judged on prose is judged on how the
 code reads. The judge and the human both get the exit code and the output beside the
-answer, and a failed check cannot beat a passed one (ruling O-4). It is the one place
-evalmine runs something it did not write, so fixtures are synthetic and the directory
-is deleted afterwards.
+answer, a failed check cannot beat a passed one (ruling O-4), and an answer that
+retracts a wrong block and writes a second is scored on the second with the retraction
+on record. It is the one place evalmine runs something it did not write, so fixtures
+are synthetic and the directory is deleted afterwards.
 
 **`judge.py` · `exclusion_reason()` / `judge_pair()`.** Excludes pairs where either side is
 unusable before spending anything, then calls the judge twice on the survivors, the two
@@ -140,7 +143,7 @@ since an all-tie judge agreeing with an all-tie human has shown nothing.
 **`report.py` · `build_report()` / `render_markdown()`.** One JSON object every rendered
 number comes from, then Markdown with calibration above the win-rates and the per-task
 table sorted worst-first. *Why:* no adjectives and no recommendation anywhere in it —
-judgement goes in `DECISIONS.md`, written by a person, because a report that editorialises
+judgement goes in `DECISIONS.md`, worded from the owner's verdict, because a report that editorialises
 is one you stop reading critically.
 
 **`mcp_server.py` · `run_suite_impl()` / `_effective_cap()`.** Three tools over stdio, each
@@ -220,10 +223,9 @@ or names carried over, example suite invented here. What carried over is structu
 fairly obvious once you have run evals for a while — separate run from score from report,
 keep judgement out of the report, pin prices to a date.
 
-**Why execute the code instead of trusting the judge?** Because the first real run
-showed the judge grading bash one-liners on how they read: a win-rate, no failures,
-and nothing had run either answer. A fixture and an exit code are cheap, local and
-never cached. The judge still decides between two answers that both pass, and sees
+**Why execute the code instead of trusting the judge?** Because a judge that reads
+code grades how it reads: two bash one-liners, a win-rate, no failures, and nothing has
+run either of them. A fixture and an exit code are cheap, local and never cached. The judge still decides between two answers that both pass, and sees
 both outputs when they do not. The check is evidence, not a verdict — a broken fixture
 would otherwise hand out losses for a bug in the harness, which is why `error` is its
 own status and counts against the rate rather than against the model.

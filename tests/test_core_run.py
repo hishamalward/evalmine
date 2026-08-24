@@ -386,8 +386,10 @@ def test_execution_checks_reach_the_answers_the_report_and_the_html(tmp_path):
 
     for model in MODELS:
         assert report["per_model"][model]["check"] == {
-            "n": 2, "pass": 1, "fail": 1, "error": 0, "rate": 0.5,
+            "n": 2, "pass": 1, "fail": 1, "error": 0, "rate": 0.5, "multi_block": 0,
         }
+        assert answers[("passes", model)]["check_blocks"][0]["status"] == "pass"
+        assert answers[("unchecked", model)]["check_blocks"] == []
         assert report["per_task"][0]["models"][model]["check"]["rate"] == 0.5
     assert report["per_task"][0]["has_check"] is True
     assert {(f["case"], f["model"]) for f in report["check_failures"]} == {

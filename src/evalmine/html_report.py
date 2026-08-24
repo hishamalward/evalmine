@@ -720,12 +720,33 @@ def _pane(letter: str, pair: dict[str, Any]) -> str:
         exit_code = check.get("exit_code")
         verdict = status.upper() + (f" (exit {exit_code})" if exit_code is not None else "")
         css = "ok" if status == "pass" else "bad"
+        blocks = check.get("blocks") or []
+        if len(blocks) > 1:
+            sequence = " → ".join(str(b.get("status", "")).upper() for b in blocks)
+            verdict += f" · {len(blocks)} blocks: {sequence}"
         check_flag = f'<span class="flag {css}">exec: {esc(verdict)}</span>'
-        output = (check.get("output") or "").strip() or "(no output)"
-        check_body = (
-            '<details class="prompt exec" open><summary>Execution output</summary>'
-            f"<pre>{esc(output)}</pre></details>"
-        )
+        if len(blocks) > 1:
+            parts = []
+            for b in blocks:
+                head = str(b.get("status", "")).upper()
+                if b.get("exit_code") is not None:
+                    head += f" (exit {b['exit_code']})"
+                out = (b.get("output") or "").strip() or "(no output)"
+                parts.append(
+                    f'<p class="note">block {esc(b.get("index"))}: {esc(head)}</p>'
+                    f"<pre>{esc(out)}</pre>"
+                )
+            check_body = (
+                '<details class="prompt exec" open><summary>Execution output, every block</summary>'
+                + "".join(parts)
+                + "</details>"
+            )
+        else:
+            output = (check.get("output") or "").strip() or "(no output)"
+            check_body = (
+                '<details class="prompt exec" open><summary>Execution output</summary>'
+                f"<pre>{esc(output)}</pre></details>"
+            )
     return (
         f'<section class="pane"><h4>Answer {letter}{finish_flag}{schema_flag}{check_flag}'
         f'<span class="model reveal-inline"><code>{esc(model)}</code> '

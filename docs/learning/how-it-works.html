@@ -425,10 +425,10 @@
       baseline — then measures the judge against my own labels, refusing to headline the
       win-rate when it cannot show the judge agrees with me. It deliberately does no RAG eval,
       no multi-turn trajectories, no fine-tuning, no UI, nothing hosted; three providers, three
-      MCP tools, stop. The first real run, 2026-08-23, was a shakedown — 36 of my own cases,
-      Claude Opus 5 against Claude Sonnet 5, $1.13 — and its most useful number was <strong>3 of
-      8</strong>: the answers in the first batch that had spent their whole 900-token budget on
-      thinking the harness could not see (commit <code>cf88afc</code>).</p>
+      MCP tools, stop. On the example suite against the fake adapter, the number it refuses
+      to headline is <strong>0.463</strong>: a win-rate over 20 pairs whose judge scored kappa 0.25
+      against the twelve labels, below the 0.40 floor, so it prints flagged — reproducible on
+      a clean checkout, and the README shows the run.</p>
     </section>
 
     <section id="one-run">
@@ -516,9 +516,10 @@
         <span>Omits <code>temperature</code> and <code>top_p</code> for Opus 4.7 and everything after it (the API returns
         400 otherwise), sends <code>thinking: {type: disabled}</code> where the API would default it on,
         and turns a text-less <code>max_tokens</code> stop into an empty answer instead of a fatal error.</span>
-        <span class="why"> <span class="why-label">Why:</span> the suite's <code>max_tokens</code> is an answer budget. On the first real run three of the
-        first eight answers had spent it on thinking that the usage response does not itemise,
-        and the ninth returned no text at all; the model comparison was over before it started.</span>
+        <span class="why"> <span class="why-label">Why:</span> the suite's <code>max_tokens</code> is an answer budget. With thinking on, a model can spend
+        the whole budget before its first visible word, and the usage response does not itemise
+        thinking tokens, so nothing in the report would say why an answer came back short or
+        empty.</span>
       </div>
 
       <div class="code-note">
@@ -531,16 +532,18 @@
       </div>
 
       <div class="code-note">
-        <span class="code-note-head"><code>check.py</code> · <code>extract_code()</code> / <code>run_check()</code>.</span>
-        <span>The first fenced block (else the whole
-        answer) is written to a file in a fresh temporary directory with every secret stripped
-        from the environment; <code>setup</code> lays down the fixture, <code>run</code> executes under a timeout,
-        exit 0 is a pass; never cached.</span>
+        <span class="code-note-head"><code>check.py</code> · <code>extract_blocks()</code> / <code>run_check()</code>.</span>
+        <span>Every fenced block (else the whole
+        answer) is written to a file in its own fresh temporary directory with every secret
+        stripped from the environment; <code>setup</code> lays down the fixture, <code>run</code> executes under a
+        timeout, exit 0 is a pass. The final block is the verdict and the earlier ones are
+        recorded in order; never cached.</span>
         <span class="why"> <span class="why-label">Why:</span> a code task judged on prose is judged on how the
         code reads. The judge and the human both get the exit code and the output beside the
-        answer, and a failed check cannot beat a passed one (ruling O-4). It is the one place
-        evalmine runs something it did not write, so fixtures are synthetic and the directory
-        is deleted afterwards.</span>
+        answer, a failed check cannot beat a passed one (ruling O-4), and an answer that
+        retracts a wrong block and writes a second is scored on the second with the retraction
+        on record. It is the one place evalmine runs something it did not write, so fixtures
+        are synthetic and the directory is deleted afterwards.</span>
       </div>
 
       <div class="code-note">
@@ -580,7 +583,7 @@
         number comes from, then Markdown with calibration above the win-rates and the per-task
         table sorted worst-first.</span>
         <span class="why"> <span class="why-label">Why:</span> no adjectives and no recommendation anywhere in it —
-        judgement goes in <code>DECISIONS.md</code>, written by a person, because a report that editorialises
+        judgement goes in <code>DECISIONS.md</code>, worded from the owner's verdict, because a report that editorialises
         is one you stop reading critically.</span>
       </div>
 
@@ -756,9 +759,9 @@
 
       <div class="qa">
         <span class="q">Why execute the code instead of trusting the judge?</span>
-        <p>Because the first real run
-        showed the judge grading bash one-liners on how they read: a win-rate, no failures,
-        and nothing had run either answer. A fixture and an exit code are cheap, local and
+        <p>Because a judge that reads
+        code grades how it reads: two bash one-liners, a win-rate, no failures, and nothing has
+        run either of them. A fixture and an exit code are cheap, local and
         never cached. The judge still decides between two answers that both pass, and sees
         both outputs when they do not. The check is evidence, not a verdict — a broken fixture
         would otherwise hand out losses for a bug in the harness, which is why <code>error</code> is its

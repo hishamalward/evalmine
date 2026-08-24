@@ -107,6 +107,8 @@ class AnswerRecord:
     check_status: str = "not_applicable"
     check_exit: int | None = None
     check_output: str | None = None
+    #: Every code block the check ran, in order; the verdict above is the last one's.
+    check_blocks: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def check_view(self) -> dict[str, Any] | None:
@@ -117,6 +119,7 @@ class AnswerRecord:
             "status": self.check_status,
             "exit_code": self.check_exit,
             "output": self.check_output or "",
+            "blocks": list(self.check_blocks),
         }
 
     @property
@@ -139,6 +142,7 @@ class AnswerRecord:
             "check_status": self.check_status,
             "check_exit": self.check_exit,
             "check_output": self.check_output,
+            "check_blocks": self.check_blocks,
             "latency_ms": self.latency_ms,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -644,6 +648,15 @@ def _run_one_answer(
         record.check_status = result.status
         record.check_exit = result.exit_code
         record.check_output = result.output
+        record.check_blocks = [
+            {
+                "index": b.index,
+                "status": b.status,
+                "exit_code": b.exit_code,
+                "output": b.output,
+            }
+            for b in result.blocks
+        ]
     return record
 
 

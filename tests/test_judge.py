@@ -215,6 +215,22 @@ def test_a_timed_out_check_has_no_exit_code_in_the_prompt():
     assert "(no output)" in prompt
 
 
+def test_several_blocks_are_reported_in_order_with_the_final_as_verdict():
+    fumbled = {
+        "status": "pass", "exit_code": 0, "output": "5 a.txt",
+        "blocks": [
+            {"index": 1, "status": "fail", "exit_code": 1, "output": "1 a.txt"},
+            {"index": 2, "status": "pass", "exit_code": 0, "output": "5 a.txt"},
+        ],
+    }
+    prompt = build_prompt("t", "r", "one", "two", fumbled, PASSED)
+    assert "Answer 1: PASS (exit 0)" in prompt
+    assert "Answer 1 submitted 2 code blocks; the verdict above is the final block's." in prompt
+    assert "block 1: FAIL (exit 1), block 2: PASS (exit 0)" in prompt
+    assert "not the same as being right the first time" in prompt
+    assert "Answer 2 submitted" not in prompt
+
+
 def test_the_swapped_pass_swaps_the_checks_with_the_answers():
     from evalmine.judge import Judge, JudgeCall
     from evalmine.suite import CallParams, JudgeConfig, Task

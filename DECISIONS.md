@@ -8,10 +8,11 @@ from a directory of reports. The report says what the run measured; **this file 
 what you did about it and why.** They are deliberately separate: `report.md` contains
 no adjectives and makes no recommendation, and this file is where the judgement goes.
 
-Entries are written by a person. `evalmine run` prints a pre-filled template at the
-bottom of every report — the numbers, the run id and the report path are already in
-it — and you paste that here and fill in the four prose fields. The tool never writes
-to this file itself.
+Entries are worded from the owner's verdict. `evalmine run` prints a pre-filled
+template at the bottom of every report — the numbers, the run id and the report path
+are already in it. The owner says what they decided and why; the four prose fields are
+filled from that, by the owner or by an agent working with them. `evalmine` itself
+never writes to this file.
 
 Fill in every field, including the awkward two. **"What would change this"** is the
 result that would reverse the decision, written *before* you have it, so that six
@@ -40,27 +41,4 @@ anything is worth knowing about, not least because it is evidence about the suit
 
 ## Entries
 
-## 2026-08-23 — my-tasks (private) — anthropic/claude-opus-5 vs anthropic/claude-sonnet-5
-
-*Drafted from the run by the session that ran it; the owner's wording is pending. The
-suite and its reports are private and live outside this repository; this entry carries
-counts and numbers only.*
-
-- **Run:** 20260824T001654Z_cb783334_b0ab3852 · report: private (not in this repository)
-- **Question:** a shakedown — does the harness survive a real suite against current
-  models, and is Sonnet 5 good enough to replace Opus 5 on my everyday tasks?
-- **Numbers:** win-rate 0.611 [0.43–0.79] (UNCALIBRATED, 0 labels), n=18, flips 2 ·
-  kappa undefined (0 labels) · schema pass 100% → 100% · exec pass 50% → 75% (n=4) ·
-  p95 9848ms → 5771ms · cost/run $0.166 → $0.067 (if uncached)
-- **Decision:** inconclusive
-- **Why:** No pair was labelled, so the judge is uncalibrated and the win-rate is not a
-  number I may quote. The run's yield was three harness fixes — sampling parameters
-  rejected on the Claude 5 models, default-on thinking spending the answer budget
-  (three of the first eight answers, 18 to 506 visible characters), and execution
-  checks for the code task — not a model decision.
-- **What would change this:** 15–20 labels spread across the tasks with kappa at or
-  above 0.40, on a suite built for a decision I actually have to make, and a win-rate
-  whose interval excludes 0.5.
-- **Not measured:** thinking-on behaviour (the adapter disables it on both sides);
-  anything with tools or multiple turns; the 18 cases trimmed out; whether a Sonnet 4.6
-  judge can grade the code and reasoning tasks at all — the per-task kappa would say.
+*No entries yet.*
