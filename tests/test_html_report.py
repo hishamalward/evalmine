@@ -288,3 +288,20 @@ def pair_view(fake_run):
 @pytest.fixture(scope="module")
 def html_and_view(fake_run, pair_view):
     return render_html(fake_run.report, pair_view), pair_view
+
+
+def test_a_refusal_or_truncation_is_flagged_on_the_pane():
+    from evalmine.html_report import _pane
+
+    base = {
+        "a_role": "baseline", "b_role": "candidate", "baseline": "m/a", "candidate": "m/b",
+        "a_text": "x", "b_text": "y", "a_error": None, "b_error": None,
+        "a_schema_status": "not_applicable", "b_schema_status": "not_applicable",
+        "a_check": None, "b_check": None,
+    }
+    refused = _pane("A", {**base, "a_finish": "refusal", "b_finish": "end_turn"})
+    assert "refused by the provider" in refused
+    truncated = _pane("B", {**base, "a_finish": "end_turn", "b_finish": "max_tokens"})
+    assert "truncated: hit max_tokens" in truncated
+    clean = _pane("A", {**base, "a_finish": "end_turn", "b_finish": "end_turn"})
+    assert "flag bad" not in clean

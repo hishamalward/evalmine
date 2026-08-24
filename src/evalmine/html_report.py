@@ -112,6 +112,10 @@ def build_pair_view(data: RunData) -> list[dict[str, Any]]:
             "baseline": (base.check_view if base else None),
             "candidate": (cand.check_view if cand else None),
         }
+        finishes = {
+            "baseline": (base.finish_reason if base else None),
+            "candidate": (cand.finish_reason if cand else None),
+        }
         label = labels.get((pair.task_id, pair.case_id, pair.baseline, pair.candidate))
         task = data.suite.task(pair.task_id)
         prompt = base.prompt if base else (cand.prompt if cand else "")
@@ -134,6 +138,8 @@ def build_pair_view(data: RunData) -> list[dict[str, Any]]:
                 "b_schema_status": schema[roles[1]],
                 "a_check": checks[roles[0]],
                 "b_check": checks[roles[1]],
+                "a_finish": finishes[roles[0]],
+                "b_finish": finishes[roles[1]],
                 "a_error": errors[roles[0]] if not texts[roles[0]] else None,
                 "b_error": errors[roles[1]] if not texts[roles[1]] else None,
                 "excluded": pair.excluded,
@@ -674,6 +680,14 @@ def _decision_log(report: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 
+#: finish_reason values worth a flag on the pane, and how they read.
+FINISH_LABELS = {
+    "max_tokens": "truncated: hit max_tokens",
+    "refusal": "refused by the provider's safety layer",
+    "length": "truncated: hit max_tokens",
+}
+
+
 def _pane(letter: str, pair: dict[str, Any]) -> str:
     role = pair[f"{letter.lower()}_role"]
     model = pair["baseline"] if role == "baseline" else pair["candidate"]
@@ -688,6 +702,14 @@ def _pane(letter: str, pair: dict[str, Any]) -> str:
     schema_flag = (
         f'<span class="flag bad">schema: {esc(schema)}</span>'
         if schema in ("parse_fail", "schema_fail")
+        else ""
+    )
+    finish = pair.get(f"{letter.lower()}_finish")
+    #: A refusal or a truncated answer is not the model's best attempt; the
+    #: labeller must see that beside the text, not discover it in answers.jsonl.
+    finish_flag = (
+        f'<span class="flag bad">{esc(FINISH_LABELS[finish])}</span>'
+        if finish in FINISH_LABELS
         else ""
     )
     check = pair.get(f"{letter.lower()}_check")
@@ -705,7 +727,7 @@ def _pane(letter: str, pair: dict[str, Any]) -> str:
             f"<pre>{esc(output)}</pre></details>"
         )
     return (
-        f'<section class="pane"><h4>Answer {letter}{schema_flag}{check_flag}'
+        f'<section class="pane"><h4>Answer {letter}{finish_flag}{schema_flag}{check_flag}'
         f'<span class="model reveal-inline"><code>{esc(model)}</code> '
         f'<span class="role">({esc(role)})</span></span></h4>{body}{check_body}</section>'
     )
