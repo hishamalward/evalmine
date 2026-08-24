@@ -6,9 +6,11 @@ from __future__ import annotations
 import os
 
 from evalmine.check import (
+    BASH_ENV_VAR,
     MAX_BLOCKS,
     CheckResult,
     CheckSpec,
+    bash_executable,
     extract_blocks,
     extract_code,
     run_check,
@@ -157,3 +159,15 @@ def test_only_the_last_max_blocks_run():
     assert result.blocks[0].index == 3
     assert result.blocks[-1].index == MAX_BLOCKS + 2
     assert result.code == f"block {MAX_BLOCKS + 2}"
+
+
+def test_bash_override_wins(monkeypatch):
+    monkeypatch.setenv(BASH_ENV_VAR, "/opt/somewhere/bash")
+    assert bash_executable() == "/opt/somewhere/bash"
+
+
+def test_the_chosen_bash_is_never_the_wsl_launcher(monkeypatch):
+    monkeypatch.delenv(BASH_ENV_VAR, raising=False)
+    chosen = bash_executable()
+    assert "system32" not in chosen.lower()
+    assert os.path.basename(chosen).lower().startswith("bash")

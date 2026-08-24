@@ -912,8 +912,10 @@ A check that ran is part of the record on every surface: `answers.jsonl`
 (`check_status`, `check_exit`, `check_output`), the scorecard, the per-task
 table, and the failures section.
 
-Checks need `bash` on `PATH`. They are the one place evalmine executes
-something it did not write; keep fixtures synthetic.
+Checks need `bash`: on `PATH`, or Git for Windows' bash on Windows (the
+`System32` `bash.exe` is the WSL launcher and is never used), or whatever
+`EVALMINE_BASH` names. They are the one place evalmine executes something it did
+not write; keep fixtures synthetic.
 
 ## 7. The judge
 

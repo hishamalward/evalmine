@@ -8,8 +8,9 @@ pair view (with the actual output, so a human labels on results rather than
 on prose), and into the judge prompt, where a failed check cannot beat a
 passed one.
 
-Checks run locally, in a fresh temporary directory, under a timeout, with the
-secrets stripped from the environment. They are never cached: a check is
+Checks run locally under ``bash`` (Git for Windows' bash on Windows; set
+``EVALMINE_BASH`` to choose another), in a fresh temporary directory, under a
+timeout, with the secrets stripped from the environment. They are never cached: a check is
 cheap, and editing one must re-evaluate every answer without an API call.
 What runs is model-written code - keep fixtures synthetic and never point a
 check at anything you would mind losing.
@@ -41,6 +42,34 @@ MAX_BLOCKS = 5
 
 #: Environment variables the check's shell never sees.
 _SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+#: Override for the shell that runs checks. Otherwise: ``bash`` on PATH, except
+#: on Windows, where ``System32\bash.exe`` is the WSL launcher (it prints a
+#: complaint and exits 1 on a machine with no distribution) and Git for
+#: Windows' bash is what a check needs.
+BASH_ENV_VAR = "EVALMINE_BASH"
+
+
+def bash_executable() -> str:
+    override = os.environ.get(BASH_ENV_VAR)
+    if override:
+        return override
+    if os.name == "nt":
+        roots = [
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            os.environ.get("ProgramW6432", r"C:\Program Files"),
+        ]
+        for root in roots:
+            for sub in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
+                candidate = os.path.join(root, *sub)
+                if os.path.isfile(candidate):
+                    return candidate
+        found = shutil.which("bash")
+        if found and "system32" not in found.lower():
+            return found
+        return "bash"
+    return shutil.which("bash") or "bash"
 
 
 @dataclass(frozen=True)
@@ -125,11 +154,12 @@ class _Outcome:
 def _sh(script: str, cwd: str, env: dict[str, str], timeout_s: int) -> _Outcome:
     try:
         proc = subprocess.run(
-            ["bash", "-c", script],
+            [bash_executable(), "-c", script],
             cwd=cwd,
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=timeout_s,
             stdin=subprocess.DEVNULL,
