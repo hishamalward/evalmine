@@ -19,8 +19,8 @@ from . import __version__
 from .adapters import Request, build_adapter, call_with_retries, split_model
 from .adapters.base import Adapter, AdapterError
 from .cache import DEFAULT_CACHE_DIR, Cache, answer_payload, cache_key, judge_payload
-from .html_report import build_pair_view, render_html
 from .check import CheckSpec, run_check
+from .html_report import build_pair_view, render_html
 from .judge import PROVIDER_ERROR as REASON_PROVIDER_ERROR
 from .judge import Judge, JudgeCall, PairResult, exclusion_reason
 from .metrics import (

@@ -40,5 +40,27 @@ anything is worth knowing about, not least because it is evidence about the suit
 
 ## Entries
 
-*None yet. The first entry comes from the first real run on a real suite — see
-"Not yet" in the README.*
+## 2026-08-23 — my-tasks (private) — anthropic/claude-opus-5 vs anthropic/claude-sonnet-5
+
+*Drafted from the run by the session that ran it; the owner's wording is pending. The
+suite and its reports are private and live outside this repository; this entry carries
+counts and numbers only.*
+
+- **Run:** 20260824T001654Z_cb783334_b0ab3852 · report: private (not in this repository)
+- **Question:** a shakedown — does the harness survive a real suite against current
+  models, and is Sonnet 5 good enough to replace Opus 5 on my everyday tasks?
+- **Numbers:** win-rate 0.611 [0.43–0.79] (UNCALIBRATED, 0 labels), n=18, flips 2 ·
+  kappa undefined (0 labels) · schema pass 100% → 100% · exec pass 50% → 75% (n=4) ·
+  p95 9848ms → 5771ms · cost/run $0.166 → $0.067 (if uncached)
+- **Decision:** inconclusive
+- **Why:** No pair was labelled, so the judge is uncalibrated and the win-rate is not a
+  number I may quote. The run's yield was three harness fixes — sampling parameters
+  rejected on the Claude 5 models, default-on thinking spending the answer budget
+  (three of the first eight answers, 18 to 506 visible characters), and execution
+  checks for the code task — not a model decision.
+- **What would change this:** 15–20 labels spread across the tasks with kappa at or
+  above 0.40, on a suite built for a decision I actually have to make, and a win-rate
+  whose interval excludes 0.5.
+- **Not measured:** thinking-on behaviour (the adapter disables it on both sides);
+  anything with tools or multiple turns; the 18 cases trimmed out; whether a Sonnet 4.6
+  judge can grade the code and reasoning tasks at all — the per-task kappa would say.

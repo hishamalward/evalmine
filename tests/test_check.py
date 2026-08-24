@@ -18,7 +18,8 @@ def test_extract_code_without_a_fence_is_the_whole_answer_stripped():
 
 
 def test_extract_code_handles_language_tags_and_crlf():
-    assert extract_code("```python\r\ndef f():\r\n    return 1\r\n```") == "def f():\r\n    return 1"
+    crlf = "```python\r\ndef f():\r\n    return 1\r\n```"
+    assert extract_code(crlf) == "def f():\r\n    return 1"
     assert extract_code("``` sh \nls\n```") == "ls"
 
 

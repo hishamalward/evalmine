@@ -807,7 +807,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             add("")
             for item in check_failures:
                 head = item["output_head"][0] if item["output_head"] else ""
-                exit_code = "no exit code" if item["exit_code"] is None else f"exit {item['exit_code']}"
+                exit_code = (
+                    "no exit code" if item["exit_code"] is None else f"exit {item['exit_code']}"
+                )
                 add(f"- `{item['model']}` on `{item['task']}/{item['case']}`: "
                     f"{item['status']} ({exit_code}) {head}".rstrip())
             add("")

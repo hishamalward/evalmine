@@ -425,8 +425,10 @@
       baseline — then measures the judge against my own labels, refusing to headline the
       win-rate when it cannot show the judge agrees with me. It deliberately does no RAG eval,
       no multi-turn trajectories, no fine-tuning, no UI, nothing hosted; three providers, three
-      MCP tools, stop. The first real result:
-      <span class="placeholder">[first real number — pending the owner's 40-task suite run]</span>.</p>
+      MCP tools, stop. The first real run, 2026-08-23, was a shakedown — 36 of my own cases,
+      Claude Opus 5 against Claude Sonnet 5, $1.13 — and its most useful number was <strong>3 of
+      8</strong>: the answers in the first batch that had spent their whole 900-token budget on
+      thinking the harness could not see (commit <code>cf88afc</code>).</p>
     </section>
 
     <section id="one-run">
@@ -510,12 +512,35 @@
       </div>
 
       <div class="code-note">
+        <span class="code-note-head"><code>adapters/anthropic.py</code> · <code>sampling_params_supported()</code> / <code>thinking_defaults_on()</code>.</span>
+        <span>Omits <code>temperature</code> and <code>top_p</code> for Opus 4.7 and everything after it (the API returns
+        400 otherwise), sends <code>thinking: {type: disabled}</code> where the API would default it on,
+        and turns a text-less <code>max_tokens</code> stop into an empty answer instead of a fatal error.</span>
+        <span class="why"> <span class="why-label">Why:</span> the suite's <code>max_tokens</code> is an answer budget. On the first real run three of the
+        first eight answers had spent it on thinking that the usage response does not itemise,
+        and the ninth returned no text at all; the model comparison was over before it started.</span>
+      </div>
+
+      <div class="code-note">
         <span class="code-note-head"><code>metrics.py</code> · <code>schema_verdict()</code>.</span>
         <span><code>json.loads</code> the whole response, else the first
         fenced block, else give up: <code>pass</code>, <code>schema_fail</code>, <code>parse_fail</code>.</span>
         <span class="why"> <span class="why-label">Why:</span> no brace-matching,
         no repair, no retry, because a model that cannot emit JSON on request is telling you
         something the harness should report rather than launder.</span>
+      </div>
+
+      <div class="code-note">
+        <span class="code-note-head"><code>check.py</code> · <code>extract_code()</code> / <code>run_check()</code>.</span>
+        <span>The first fenced block (else the whole
+        answer) is written to a file in a fresh temporary directory with every secret stripped
+        from the environment; <code>setup</code> lays down the fixture, <code>run</code> executes under a timeout,
+        exit 0 is a pass; never cached.</span>
+        <span class="why"> <span class="why-label">Why:</span> a code task judged on prose is judged on how the
+        code reads. The judge and the human both get the exit code and the output beside the
+        answer, and a failed check cannot beat a passed one (ruling O-4). It is the one place
+        evalmine runs something it did not write, so fixtures are synthetic and the directory
+        is deleted afterwards.</span>
       </div>
 
       <div class="code-note">
@@ -526,7 +551,8 @@
         <span class="why"> <span class="why-label">Why:</span> judges measurably prefer the answer they
         see first, so running one order is the commonest way to publish a win-rate that is partly
         an ordering artefact; the judge also never sees a model name, price, latency, or which
-        side is the baseline.</span>
+        side is the baseline. For a case with an execution check, both results ride along and
+        are swapped with the answers in pass 2.</span>
       </div>
 
       <div class="code-note">
@@ -632,6 +658,12 @@
               <td>Which direction the bias runs, only that order changed the verdict</td>
             </tr>
             <tr>
+              <td>exec pass rate</td>
+              <td><code>pass / (pass + fail + error)</code> over answers whose case declares a check (§6.6)</td>
+              <td>A permissive <code>run</code> script; a fixture that accepts the wrong output; a model that returns one block when asked for one</td>
+              <td>Anything about the prose. A fail is evidence for the judge, not an exclusion, so the win-rate's <code>n</code> does not shrink</td>
+            </tr>
+            <tr>
               <td>excluded pairs</td>
               <td>Either side unusable, broken out by reason</td>
               <td>A model bad at JSON — its win-rate is then over a smaller, easier subset</td>
@@ -662,7 +694,10 @@
       Then the flip rate (above 0.30 you are measuring order) and <code>n</code> (schema-passing pairs
       only, so a model that fails schema is judged on an easier subset). Only then the
       scorecard, reading cost <em>with</em> quality: winning 0.55 for triple the money is a different
-      decision from winning 0.55 for half. Finish with the per-task table, sorted worst-first,
+      decision from winning 0.55 for half. On a code task, read the exec pass column before
+      the win-rate: the judge was told a failed check cannot beat a passed one, so a win-rate
+      there is mostly the checks talking, and the interesting pairs are the ones where both
+      sides passed or both failed. Finish with the per-task table, sorted worst-first,
       and <code>evalmine compare</code> against the previous run — a flat headline hiding three tasks that
       moved 0.4 in opposite directions is the finding you would otherwise miss. Before
       publishing a number as a claim, raise <code>min_kappa</code> to 0.60.</p>
@@ -717,6 +752,17 @@
         or names carried over, example suite invented here. What carried over is structural and
         fairly obvious once you have run evals for a while — separate run from score from report,
         keep judgement out of the report, pin prices to a date.</p>
+      </div>
+
+      <div class="qa">
+        <span class="q">Why execute the code instead of trusting the judge?</span>
+        <p>Because the first real run
+        showed the judge grading bash one-liners on how they read: a win-rate, no failures,
+        and nothing had run either answer. A fixture and an exit code are cheap, local and
+        never cached. The judge still decides between two answers that both pass, and sees
+        both outputs when they do not. The check is evidence, not a verdict — a broken fixture
+        would otherwise hand out losses for a bug in the harness, which is why <code>error</code> is its
+        own status and counts against the rate rather than against the model.</p>
       </div>
 
       <div class="qa">

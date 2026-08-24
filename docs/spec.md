@@ -1510,6 +1510,14 @@ tasks with labels, supplied after this spec is approved) comparing two model
 versions, producing the first report and the first `DECISIONS.md` entry. Until
 that exists, this is a tool that has never been used.
 
+*Status, 2026-08-23:* half done. The run happened — a private suite of 36 cases,
+`anthropic/claude-opus-5` against `anthropic/claude-sonnet-5`, $1.13 — and produced
+the first report. It also broke the Anthropic adapter twice on first contact with the
+Claude 5 models (§10: sampling parameters rejected; thinking on by default against the
+answer budget) and showed the code task being judged on prose, which became §6.6 and
+ruling O-4. No pair has been labelled, so there is no calibrated number and no
+decision-log entry yet; the shakedown entry in `DECISIONS.md` is marked inconclusive.
+
 ---
 
 ## 14. Rulings — 2026-08-23

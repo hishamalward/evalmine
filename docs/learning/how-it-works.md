@@ -1,6 +1,6 @@
 # How evalmine works
 
-A styled, browser-readable rendering of this file lives at [docs/how-it-works.html](../how-it-works.html).
+A styled, browser-readable rendering of this file lives at [how-it-works.html](how-it-works.html).
 
 For whoever owns this next, including me in six months. It assumes the README and aims
 to let you defend every number without opening the code. [docs/spec.md](../spec.md) is
@@ -16,8 +16,10 @@ cost from a price table pinned to a date, and a pairwise judge win-rate against 
 baseline — then measures the judge against my own labels, refusing to headline the
 win-rate when it cannot show the judge agrees with me. It deliberately does no RAG eval,
 no multi-turn trajectories, no fine-tuning, no UI, nothing hosted; three providers, three
-MCP tools, stop. The first real result:
-**[first real number — pending the owner's 40-task suite run]**.
+MCP tools, stop. The first real run, 2026-08-23, was a shakedown — 36 of my own cases,
+Claude Opus 5 against Claude Sonnet 5, $1.13 — and its most useful number was **3 of
+8**: the answers in the first batch that had spent their whole 900-token budget on
+thinking the harness could not see (commit `cf88afc`).
 
 ## One run
 
@@ -34,10 +36,11 @@ flowchart TD
     F -->|no| H["adapter.complete()<br/>retry 429/5xx/timeout, then cache"]
     G --> I["schema check<br/>pass · schema_fail · parse_fail"]
     H --> I
-    I --> J{"either side<br/>unusable?"}
+    I --> I2["execution check, if the case has one<br/>bash on the answer's code · pass · fail · error"]
+    I2 --> J{"either side<br/>unusable?"}
     J -->|yes| K["excluded pair<br/>reason recorded · no judge call"]
-    J -->|no| L["judge pass 1<br/>B first, C second"]
-    J -->|no| M["judge pass 2<br/>C first, B second"]
+    J -->|no| L["judge pass 1<br/>B first, C second<br/>check results alongside"]
+    J -->|no| M["judge pass 2<br/>C first, B second<br/>checks swapped too"]
     L --> N["score_pair() → s in 0 / .25 / .5 / .75 / 1<br/>passes disagree = flip → 0.5"]
     M --> N
     N --> O["win_rate = mean(s) · bootstrap CI<br/>schema-pass · p50/p95 · cost"]
@@ -92,17 +95,35 @@ only on timeout, 429 and 5xx. *Why:* no provider SDKs — three SDKs are three d
 trees between the reader and the request; the real cost is that we learn about an API
 change by breaking rather than by upgrading.
 
+**`adapters/anthropic.py` · `sampling_params_supported()` / `thinking_defaults_on()`.**
+Omits `temperature` and `top_p` for Opus 4.7 and everything after it (the API returns
+400 otherwise), sends `thinking: {type: disabled}` where the API would default it on,
+and turns a text-less `max_tokens` stop into an empty answer instead of a fatal error.
+*Why:* the suite's `max_tokens` is an answer budget. On the first real run three of the
+first eight answers had spent it on thinking that the usage response does not itemise,
+and the ninth returned no text at all; the model comparison was over before it started.
+
 **`metrics.py` · `schema_verdict()`.** `json.loads` the whole response, else the first
 fenced block, else give up: `pass`, `schema_fail`, `parse_fail`. *Why:* no brace-matching,
 no repair, no retry, because a model that cannot emit JSON on request is telling you
 something the harness should report rather than launder.
+
+**`check.py` · `extract_code()` / `run_check()`.** The first fenced block (else the whole
+answer) is written to a file in a fresh temporary directory with every secret stripped
+from the environment; `setup` lays down the fixture, `run` executes under a timeout,
+exit 0 is a pass; never cached. *Why:* a code task judged on prose is judged on how the
+code reads. The judge and the human both get the exit code and the output beside the
+answer, and a failed check cannot beat a passed one (ruling O-4). It is the one place
+evalmine runs something it did not write, so fixtures are synthetic and the directory
+is deleted afterwards.
 
 **`judge.py` · `exclusion_reason()` / `judge_pair()`.** Excludes pairs where either side is
 unusable before spending anything, then calls the judge twice on the survivors, the two
 answers in one order and then the other. *Why:* judges measurably prefer the answer they
 see first, so running one order is the commonest way to publish a win-rate that is partly
 an ordering artefact; the judge also never sees a model name, price, latency, or which
-side is the baseline.
+side is the baseline. For a case with an execution check, both results ride along and
+are swapped with the answers in pass 2.
 
 **`metrics.py` · `score_pair()` / `win_rate()` / `bootstrap_ci()`.** Two passes collapse to
 one score in `{0, .25, .5, .75, 1}`; passes that disagree are a *flip*, scored 0.5 and
@@ -143,6 +164,7 @@ paths, never raw responses: those would cost the caller more than the eval did.
 | **cost** | `in/1e6*in_price + out/1e6*out_price + cached_in/1e6*cached_price`, prices pinned to a date | Cache hits, which cost 0 this run — read `cost_if_uncached` beside it | Whether the table is still true. It carries the date it was read |
 | **win-rate** | `mean(s)` over included pairs, `s ∈ {0,.25,.5,.75,1}` per §7.2 | Small `n` after exclusions; a judge that is also under test; flip rate above 0.30 | Whether the difference matters. Read the CI, and read it beside cost |
 | **flip rate** | Pairs whose two passes disagreed / included pairs | A weak rubric; near-identical answers | Which direction the bias runs, only that order changed the verdict |
+| **exec pass rate** | `pass / (pass + fail + error)` over answers whose case declares a check (§6.6) | A permissive `run` script; a fixture that accepts the wrong output; a model that returns one block when asked for one | Anything about the prose. A fail is evidence for the judge, not an exclusion, so the win-rate's `n` does not shrink |
 | **excluded pairs** | Either side unusable, broken out by reason | A model bad at JSON — its win-rate is then over a smaller, easier subset | Anything about quality. That is what schema-pass rate is for |
 | **agreement `po`** | Judge and human matched / labelled pairs | One category dominating, usually ties | Whether the judge beats chance |
 | **Cohen's kappa** | `(po - pe) / (1 - pe)` over three categories, with its Landis-Koch band | Very little; it is the honest one. `null` when `pe == 1` | Whether *your labels* are good. It measures agreement, not truth |
@@ -155,7 +177,10 @@ flag travels in `report.json` and every MCP response, so an agent cannot pass it
 Then the flip rate (above 0.30 you are measuring order) and `n` (schema-passing pairs
 only, so a model that fails schema is judged on an easier subset). Only then the
 scorecard, reading cost *with* quality: winning 0.55 for triple the money is a different
-decision from winning 0.55 for half. Finish with the per-task table, sorted worst-first,
+decision from winning 0.55 for half. On a code task, read the exec pass column before
+the win-rate: the judge was told a failed check cannot beat a passed one, so a win-rate
+there is mostly the checks talking, and the interesting pairs are the ones where both
+sides passed or both failed. Finish with the per-task table, sorted worst-first,
 and `evalmine compare` against the previous run — a flat headline hiding three tasks that
 moved 0.4 in opposite directions is the finding you would otherwise miss. Before
 publishing a number as a claim, raise `min_kappa` to 0.60.
@@ -194,6 +219,14 @@ re-implementation of the *pattern* only: different language, no code, prompts, t
 or names carried over, example suite invented here. What carried over is structural and
 fairly obvious once you have run evals for a while — separate run from score from report,
 keep judgement out of the report, pin prices to a date.
+
+**Why execute the code instead of trusting the judge?** Because the first real run
+showed the judge grading bash one-liners on how they read: a win-rate, no failures,
+and nothing had run either answer. A fixture and an exit code are cheap, local and
+never cached. The judge still decides between two answers that both pass, and sees
+both outputs when they do not. The check is evidence, not a verdict — a broken fixture
+would otherwise hand out losses for a bug in the harness, which is why `error` is its
+own status and counts against the rate rather than against the model.
 
 **Why put an MCP surface on an eval tool?** So the eval happens at the moment of the
 decision rather than after it: an agent about to swap a model can run the suite and read

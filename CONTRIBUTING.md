@@ -66,7 +66,9 @@ Three rules that are settled and would need a strong argument to reopen, each wi
 reasoning written out in the spec: an unknown model is a hard failure and never a
 `$0.00` (§6.3); a schema failure excludes a pair from the win-rate rather than scoring
 it a loss (§7.2, ruling O-3); the cost cap is enforced in `core.run_suite()` and never
-in a caller (§6.4).
+in a caller (§6.4). A fourth, added after the first real run: a failed execution check is
+evidence shown to the judge and the human, never an exclusion and never an automatic
+loss (§6.6, ruling O-4).
 
 ## Commits and pull requests
 

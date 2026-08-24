@@ -26,7 +26,9 @@ API_VERSION = "2023-06-01"
 #: arbitrary; only the shape of ``input`` matters to the caller.
 _SCHEMA_TOOL_NAME = "emit_result"
 
-_MODEL_ID = re.compile(r"^claude-(?P<family>opus|sonnet|haiku|fable|mythos)-(?P<major>\d+)(?:-(?P<minor>\d+))?")
+_MODEL_ID = re.compile(
+    r"^claude-(?P<family>opus|sonnet|haiku|fable|mythos)-(?P<major>\d+)(?:-(?P<minor>\d+))?"
+)
 
 
 def sampling_params_supported(model_id: str) -> bool:

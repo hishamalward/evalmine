@@ -209,7 +209,8 @@ def test_an_unchecked_side_is_labelled_not_checked():
 
 
 def test_a_timed_out_check_has_no_exit_code_in_the_prompt():
-    prompt = build_prompt("t", "r", "one", "two", {"status": "fail", "exit_code": None, "output": ""}, None)
+    timed_out = {"status": "fail", "exit_code": None, "output": ""}
+    prompt = build_prompt("t", "r", "one", "two", timed_out, None)
     assert "Answer 1: FAIL\n" in prompt
     assert "(no output)" in prompt
 

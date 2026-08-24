@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+import yaml
 
 from .check import DEFAULT_CHECK_TIMEOUT_S, CheckSpec
-import yaml
 
 SUITE_FORMAT_VERSION = 1
 

@@ -39,8 +39,11 @@ Every frame of that is a real run. Re-record it with `vhs docs/demo.tape`
 
 **Status.** v0.1.0, pre-release. The core, the three real provider adapters and the
 MCP surface are built and tested; the price table has been verified against each
-provider's public pricing page on its pinned date. What has not happened yet is a
-real run on a real forty-task suite — see [Not yet](#not-yet).
+provider's public pricing page on its pinned date. The first real run happened on
+2026-08-23 — a private suite of the author's own tasks, Claude Opus 5 against Claude
+Sonnet 5 — and was a shakedown: it fixed the Anthropic adapter for the Claude 5 models,
+added execution checks for code tasks, and produced no decision, because no pair had
+been labelled yet — see [Not yet](#not-yet).
 
 Specification: [docs/spec.md](docs/spec.md). It is the contract the code is written
 against and it wins over this README wherever the two disagree.
@@ -216,8 +219,9 @@ this recommendation exists so a first suite is not what ends up in a blog post.
 
 **3. Then the scorecard, and read cost with quality, never after it.** Schema-pass
 rate (labelled `native` or `prompted`, because a provider that enforces a schema for
-you and one that was merely asked nicely are not the same measurement), p50 and p95
-latency with their `n`, cost this run and cost if uncached. A candidate that wins
+you and one that was merely asked nicely are not the same measurement), the exec pass
+rate with its `n` where a task declares execution checks, p50 and p95 latency with
+their `n`, cost this run and cost if uncached. A candidate that wins
 0.55 for triple the money is a different decision from one that wins 0.55 for half.
 
 **4. The per-task table, sorted worst-first.** A headline win-rate that did not move
@@ -298,8 +302,8 @@ evalmine exists for three narrower reasons.
   number, it is a decision you have to defend in six months. `DECISIONS.md` is
   pre-filled by the report and written by a human, and it lives in your repo next to
   the code the decision was about.
-- **The surface is small enough to read in a sitting.** Roughly 4,500 lines including
-  four adapters and the reports. No LLM framework, no provider SDKs — three
+- **The surface is small enough to read in a sitting.** Roughly 6,000 lines including
+  four adapters, the reports and the execution checks. No LLM framework, no provider SDKs — three
   hand-written POSTs to documented JSON endpoints. That cost is real and worth
   stating: when a provider changes its API, we find out by breaking, not by
   upgrading.
@@ -313,18 +317,26 @@ it: RAG or retrieval eval; agent or multi-turn trajectories; fine-tuning anythin
 web UI; anything hosted; more than three providers; rubric auto-generation; MCP tools
 beyond the three above.
 
-One more thing has not happened, and it is the one that matters: **no real
-forty-task suite has been run through this yet.** The example suite is invented for
-the repo, and every number in this README comes from the fake adapter. Until a real
-run produces a real report and a real decision-log entry, this is a tool that has
-never been used in anger. That run, and the first `DECISIONS.md` entry, come before
-any v0.1.0 tag.
+The first real run has happened: 2026-08-23, a private suite of the author's own
+tasks (36 cases, later trimmed to 18), Claude Opus 5 against Claude Sonnet 5, about
+$1.50 all in. It was a shakedown and it earned its keep. The Anthropic adapter did
+not survive first contact with the Claude 5 models — `temperature` is rejected there,
+and thinking is on by default, billed as output and counted against `max_tokens`, so
+three of the first eight answers had spent the whole answer budget before the first
+visible word. And the code task turned out to be judged on prose, which is where
+execution checks (spec §6.6) came from. The example suite in this repo is still
+invented, and every number in this README still comes from the fake adapter.
+
+What has still not happened is the thing that matters: **a labelled run producing a
+calibrated number and the first `DECISIONS.md` entry.** The shakedown's win-rate
+printed flagged, as it should have, because no pair had been labelled. That entry
+comes before any v0.1.0 tag.
 
 ## Development
 
 ```bash
 pip install -e ".[dev,mcp]"
-python -m pytest -q          # 228 tests, none of which make a network call
+python -m pytest -q          # 310 tests, none of which make a network call
 python -m ruff check src tests
 ```
 
