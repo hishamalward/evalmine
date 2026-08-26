@@ -175,7 +175,7 @@ def test_experiment_validate_is_explicitly_zero_execution(capsys):
     assert run_cli("experiment", "validate", str(EXAMPLE_EXPERIMENT)) == 0
     out = capsys.readouterr().out
     assert "3 arms" in out
-    assert "6 planned runs" in out
+    assert "3 planned runs" in out
     assert "no agents launched" in out
 
 
@@ -190,8 +190,8 @@ def test_experiment_plan_prints_rotated_schedule(capsys):
 def test_experiment_plan_json_is_machine_readable(capsys):
     assert run_cli("experiment", "plan", str(EXAMPLE_EXPERIMENT), "--json") == 0
     plan = json.loads(capsys.readouterr().out)
-    assert plan["schedule"]["run_count"] == 6
-    assert len(plan["runs"]) == 6
+    assert plan["schedule"]["run_count"] == 3
+    assert len(plan["runs"]) == 3
 
 
 def test_bad_experiment_exits_one(tmp_path, capsys):

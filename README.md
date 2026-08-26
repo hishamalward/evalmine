@@ -122,7 +122,8 @@ evalmine experiment plan examples/agent-model-comparison.yaml --json
 
 The shipped [model comparison](examples/agent-model-comparison.yaml) compares Opus 5
 and Opus 4.6 through Claude Code with GPT-5.6 Sol through Codex CLI over a two-turn
-repository-redesign episode, repeated twice with fresh sessions: six isolated runs.
+repository-redesign episode, run once per arm with fresh sessions: three isolated runs
+executed sequentially to limit local and subscription pressure.
 Because the Sol arm changes both model and agent product, interpret it as an agent/model
 combination rather than a model-only effect. The companion
 [configuration ablation](examples/agent-config-ablation.yaml) holds the model fixed
