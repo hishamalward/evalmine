@@ -81,7 +81,7 @@ evaluation:
     pairwise: true
     position_swap: true
     calibrate: true
-    runner: codex-cli
-    model: gpt-5.6
+    runner: claude-code
+    model: claude-fable-5
     min_kappa: 0.4
     min_labels: 10
