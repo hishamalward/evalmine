@@ -194,6 +194,7 @@ evalmine compare <report_a> <report_b>  # print the §9.3 delta between two repo
 evalmine experiment validate <manifest.yaml>
 evalmine experiment plan <manifest.yaml> [--json]
 evalmine experiment prepare <manifest.yaml> --out <outside-seed-dir> [--json]
+evalmine experiment retry <partial-prepared-dir> --out <outside-seed-dir> [--json]
 evalmine experiment verify <prepared-dir> [--json]
 evalmine experiment preflight <prepared-dir> [--json]
 evalmine experiment execute <prepared-dir> --allow-provider-calls [--turn-timeout S] [--json]
@@ -1691,7 +1692,8 @@ only that run's session identifier.
   is supported. Named plugin allowlists are not claimed until Claude exposes an exact
   per-session installed-plugin allowlist.
 - **Codex CLI:** `codex --ask-for-approval never exec --json --model ... --sandbox
-  workspace-write --cd ...`; follow-ups use `codex exec resume <thread-id>`. `plugins: none`
+  workspace-write --cd ... --skip-git-repo-check`; follow-ups use `codex exec resume
+  --skip-git-repo-check <thread-id>`. `plugins: none`
   maps to `--ignore-user-config`; `plugins: inherit` is supported. Plugin allowlists fail
   closed. One-turn runs add `--ephemeral`; multi-turn runs persist only the fresh thread
   needed for resume in Codex's provider-owned state.
@@ -1741,7 +1743,30 @@ continue so one provider failure cannot erase the comparison. The top-level stat
 for a partial result after writing its evidence. It rechecks the source baseline after all
 runs; a changed baseline also makes the result partial.
 
-### 13B.4 Phase-3A success criteria
+### 13B.4 Failed-run retry derivation
+
+`experiment retry <partial-prepared-dir> --out <outside-seed-dir>` is a zero-provider
+preparation boundary. It verifies the parent preparation and complete execution hash
+envelopes, then creates a new plan id and self-contained derived preparation. The
+derived envelope snapshots the complete parent execution beneath
+`provenance/parent-execution/`, records its marker hash and parent plan id in
+`retry.json`, and partitions the original run keys into inherited successes and failed
+runs to retry.
+
+Successful run evidence and final workspaces are copied byte-for-byte. A failed run is
+eligible only while its workspace still equals its immutable pre-agent tree hash, so a
+partial or manually edited failed workspace cannot contaminate the retry. Phase 3A
+retry supports only `workspace: copy` with `external_writes: deny`; other modes fail
+closed rather than claiming portable provenance.
+
+Preflight and execution on the derived envelope select only the failed run keys.
+Execution copies the snapshotted successful evidence into its new execution envelope,
+launches only failed runners, and computes completion, billing, validation, reports,
+and judging over the unified original run set. Parent and derived evidence are never
+overwritten. Terminal execution emits flushed start/completion status for each run and
+turn; structured stdout remains reserved for final `--json` output.
+
+### 13B.5 Phase-3A success criteria
 
 1. Preflight makes zero provider calls and refuses every unsupported or unsafe treatment.
 2. Claude, Codex, and Gemini command construction is covered using fake executables.
@@ -1751,6 +1776,8 @@ runs; a changed baseline also makes the result partial.
    in command metadata.
 6. Adding execution evidence does not invalidate immutable preparation evidence.
 7. The complete test suite remains network-free and provider-call-free.
+8. A derived retry inherits successful evidence exactly, probes and launches only
+   failed runners, and refuses a failed workspace that no longer matches its baseline.
 
 
 ## 13C. Version-2 objective validation

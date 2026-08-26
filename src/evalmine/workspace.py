@@ -27,6 +27,7 @@ from .experiment import Arm, Experiment, ExperimentError, ExperimentPlan, build_
 from .suite import SECRET_PATTERNS
 
 PREPARED_FORMAT = "evalmine-prepared-v1"
+RETRY_FORMAT = "evalmine-failed-run-retry-v1"
 MAX_BASELINE_TEXT_BYTES = 1024 * 1024
 
 _RUNNER_COMMANDS = {
@@ -103,6 +104,29 @@ class PreparedExperiment:
                 }
                 for run in self.runs
             ],
+        }
+
+
+@dataclass(frozen=True)
+class PreparedRetry:
+    root: Path
+    plan_id: str
+    parent_root: Path
+    inherited_run_keys: tuple[str, ...]
+    retry_run_keys: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "format": RETRY_FORMAT,
+            "root": str(self.root),
+            "plan_id": self.plan_id,
+            "parent_root": str(self.parent_root),
+            "run_count": len(self.inherited_run_keys) + len(self.retry_run_keys),
+            "inherited_run_count": len(self.inherited_run_keys),
+            "retry_run_count": len(self.retry_run_keys),
+            "inherited_run_keys": list(self.inherited_run_keys),
+            "retry_run_keys": list(self.retry_run_keys),
+            "provider_calls": False,
         }
 
 
@@ -295,6 +319,108 @@ def _evidence_hashes(root: Path) -> dict[str, str]:
             continue
         hashes[relative.as_posix()] = _path_content_hash(path)
     return hashes
+
+
+def _execution_evidence_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): _path_content_hash(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != "execution.json"
+    }
+
+
+def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PreparationError(f"cannot read {label} {path} ({exc})") from exc
+    if not isinstance(value, dict):
+        raise PreparationError(f"{label} {path} is not a JSON object")
+    return value
+
+
+def _verify_execution_snapshot(
+    execution_root: Path,
+    *,
+    expected_prepared_root: Path,
+) -> dict[str, Any]:
+    marker = _read_json_object(
+        execution_root / "execution.json", label="execution marker"
+    )
+    if marker.get("format") != "evalmine-execution-v1":
+        raise PreparationError(f"{execution_root} has an unknown execution format")
+    if marker.get("prepared_root") != str(expected_prepared_root):
+        raise PreparationError("parent execution points at a different prepared experiment")
+    expected = marker.get("evidence_sha256")
+    if not isinstance(expected, dict) or not expected:
+        raise PreparationError("parent execution marker has no evidence hashes")
+    actual = _execution_evidence_hashes(execution_root)
+    if actual != expected:
+        changed = sorted(set(actual) ^ set(expected))
+        if not changed:
+            changed = sorted(path for path in actual if actual[path] != expected.get(path))
+        names = ", ".join(changed[:5]) or "execution evidence files"
+        raise PreparationError(f"parent execution evidence changed: {names}")
+    return marker
+
+
+def _retry_metadata(root: Path, marker: dict[str, Any]) -> dict[str, Any] | None:
+    declared = marker.get("retry")
+    if declared is None:
+        return None
+    if declared != "retry.json":
+        raise PreparationError("prepared retry marker must reference retry.json")
+    retry = _read_json_object(root / declared, label="retry provenance")
+    if retry.get("format") != RETRY_FORMAT:
+        raise PreparationError(f"{root / declared} has an unknown retry format")
+    return retry
+
+
+def _verify_retry_provenance(
+    root: Path,
+    marker: dict[str, Any],
+    run_keys: list[str],
+) -> dict[str, Any] | None:
+    retry = _retry_metadata(root, marker)
+    if retry is None:
+        return None
+    inherited = retry.get("inherited_run_keys")
+    retried = retry.get("retry_run_keys")
+    if (
+        not isinstance(inherited, list)
+        or not inherited
+        or not isinstance(retried, list)
+        or not retried
+        or any(not isinstance(run_key, str) for run_key in inherited + retried)
+        or len(set(inherited)) != len(inherited)
+        or len(set(retried)) != len(retried)
+    ):
+        raise PreparationError("retry provenance has invalid inherited or retry run keys")
+    if set(inherited) & set(retried) or set(inherited + retried) != set(run_keys):
+        raise PreparationError("retry provenance does not partition the prepared run keys")
+    parent_root = Path(str(retry.get("parent_root", ""))).resolve()
+    snapshot = root / "provenance" / "parent-execution"
+    parent_execution = _verify_execution_snapshot(
+        snapshot,
+        expected_prepared_root=parent_root,
+    )
+    if parent_execution.get("plan_id") != retry.get("parent_plan_id"):
+        raise PreparationError("retry provenance parent plan id does not match its snapshot")
+    expected_marker_hash = retry.get("parent_execution_marker_sha256")
+    actual_marker_hash = _path_content_hash(snapshot / "execution.json")
+    if expected_marker_hash != actual_marker_hash:
+        raise PreparationError("retry provenance parent execution marker hash changed")
+    statuses = parent_execution.get("run_status")
+    if not isinstance(statuses, dict):
+        raise PreparationError("retry provenance parent execution has no run statuses")
+    if any(statuses.get(run_key) != "succeeded" for run_key in inherited):
+        raise PreparationError("retry provenance can inherit only succeeded parent runs")
+    if any(statuses.get(run_key) == "succeeded" for run_key in retried):
+        raise PreparationError("retry provenance cannot retry a succeeded parent run")
+    plan = _read_json_object(root / "plan.json", label="retry plan")
+    if plan.get("plan_id") != marker.get("plan_id"):
+        raise PreparationError("retry plan id does not match its prepared marker")
+    return retry
 
 
 def _safe_tar_target(root: Path, name: str) -> Path:
@@ -809,6 +935,8 @@ def verify_prepared(root: str | Path) -> dict[str, Any]:
         names = ", ".join(changed[:5]) or "evidence files"
         raise PreparationError(f"prepared evidence changed after creation: {names}")
 
+    retry = _verify_retry_provenance(resolved, marker, run_keys)
+
     current = _observe_seed(seed_repo)
     baseline_unchanged = current.fingerprint == marker["baseline_fingerprint"]
     if not baseline_unchanged:
@@ -824,7 +952,211 @@ def verify_prepared(root: str | Path) -> dict[str, Any]:
         "run_count": len(run_keys),
         "baseline_unchanged": True,
         "workspace_mode": marker["workspace_mode"],
+        "retry": (
+            {
+                "inherited_run_count": len(retry["inherited_run_keys"]),
+                "retry_run_count": len(retry["retry_run_keys"]),
+            }
+            if retry is not None
+            else None
+        ),
     }
+
+
+def prepare_failed_run_retry(
+    parent: str | Path,
+    out_dir: str | Path,
+) -> PreparedRetry:
+    """Create a self-contained envelope that executes only failed parent runs."""
+    verify_prepared(parent)
+    parent_root, parent_marker = _read_marker(parent)
+    if parent_marker.get("workspace_mode") != "copy":
+        raise PreparationError("failed-run retry currently requires workspace=copy")
+    parent_plan = _read_json_object(parent_root / "plan.json", label="parent plan")
+    if parent_plan.get("isolation", {}).get("external_writes") != "deny":
+        raise PreparationError("failed-run retry currently requires external_writes=deny")
+    parent_execution_root = parent_root / "execution"
+    parent_execution = _verify_execution_snapshot(
+        parent_execution_root,
+        expected_prepared_root=parent_root,
+    )
+    run_keys = parent_marker.get("run_keys", [])
+    statuses = parent_execution.get("run_status")
+    if not isinstance(run_keys, list) or not isinstance(statuses, dict):
+        raise PreparationError("parent execution has invalid run metadata")
+    inherited = tuple(run_key for run_key in run_keys if statuses.get(run_key) == "succeeded")
+    retried = tuple(run_key for run_key in run_keys if statuses.get(run_key) != "succeeded")
+    if not inherited:
+        raise PreparationError("parent execution has no succeeded runs to inherit")
+    if not retried:
+        raise PreparationError("parent execution has no failed runs to retry")
+
+    parent_execution_marker_hash = _path_content_hash(
+        parent_execution_root / "execution.json"
+    )
+    retry_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "parent_plan_id": parent_marker["plan_id"],
+                "parent_execution_marker_sha256": parent_execution_marker_hash,
+                "retry_run_keys": list(retried),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    experiment_name = str(parent_marker["experiment"])
+    plan_id = f"{experiment_name}-retry-{retry_digest}"
+    base = Path(out_dir).resolve()
+    root = (base / experiment_name / plan_id).resolve()
+    seed_repo = Path(parent_marker["seed_repo"]).resolve()
+    if root == seed_repo or _is_relative_to(root, seed_repo) or _is_relative_to(seed_repo, root):
+        raise PreparationError(
+            f"retry artifact root {root} overlaps seed repository {seed_repo}; "
+            "choose --out outside it"
+        )
+    if root.exists() or root.is_symlink():
+        raise PreparationError(
+            f"prepared retry already exists at {root}; evidence is never overwritten"
+        )
+
+    root.parent.mkdir(parents=True, exist_ok=True)
+    root.mkdir()
+    events: list[dict[str, Any]] = [
+        {
+            "event": "retry_preparation_started",
+            "at": datetime.now(timezone.utc).isoformat(),
+            "plan_id": plan_id,
+            "parent_plan_id": parent_marker["plan_id"],
+        }
+    ]
+    try:
+        for name in ("manifest.yaml", "environment.json"):
+            _write_once(root / name, (parent_root / name).read_bytes())
+        for name in ("inputs", "baseline"):
+            shutil.copytree(parent_root / name, root / name, symlinks=True)
+
+        plan = json.loads(json.dumps(parent_plan))
+        plan["plan_id"] = plan_id
+        plan["provenance"] = {
+            "format": RETRY_FORMAT,
+            "parent_plan_id": parent_marker["plan_id"],
+            "inherited_run_keys": list(inherited),
+            "retry_run_keys": list(retried),
+        }
+        schedule = plan.setdefault("schedule", {})
+        schedule["max_parallel"] = min(
+            max(1, int(schedule.get("max_parallel", 1))), len(retried)
+        )
+        _write_once(root / "plan.json", _json_bytes(plan))
+
+        snapshot = root / "provenance" / "parent-execution"
+        shutil.copytree(parent_execution_root, snapshot, symlinks=True)
+        _verify_execution_snapshot(snapshot, expected_prepared_root=parent_root)
+
+        for run_key in run_keys:
+            parent_run_dir = parent_root / "runs" / run_key
+            run = _read_json_object(parent_run_dir / "run.json", label="parent run")
+            parent_workspace = (parent_run_dir / "workspace").resolve()
+            if Path(str(run.get("workspace", ""))).resolve() != parent_workspace:
+                raise PreparationError(f"parent run {run_key} points at another workspace")
+            execution_run = _read_json_object(
+                parent_execution_root / "runs" / run_key / "run.json",
+                label="parent run execution",
+            )
+            if run_key in inherited:
+                expected_tree_hash = execution_run.get("final_tree_hash")
+                event_name = "run_inherited"
+            else:
+                expected_tree_hash = run.get("initial_tree_hash")
+                event_name = "retry_workspace_prepared"
+            if not isinstance(expected_tree_hash, str) or not expected_tree_hash:
+                raise PreparationError(f"parent run {run_key} has no usable workspace hash")
+            if _tree_hash(parent_workspace) != expected_tree_hash:
+                detail = (
+                    "changed after its successful execution"
+                    if run_key in inherited
+                    else "is not pristine after its failed execution"
+                )
+                raise PreparationError(f"parent workspace for {run_key} {detail}")
+
+            run_dir = root / "runs" / run_key
+            run_dir.mkdir(parents=True)
+            workspace = run_dir / "workspace"
+            shutil.copytree(
+                parent_workspace,
+                workspace,
+                symlinks=True,
+                ignore=shutil.ignore_patterns(".git"),
+            )
+            if _tree_hash(workspace) != expected_tree_hash:
+                raise PreparationError(f"copied workspace for {run_key} changed during retry prep")
+            for name in ("baseline.json", "treatment.json"):
+                _write_once(run_dir / name, (parent_run_dir / name).read_bytes())
+            run["workspace"] = str(workspace.resolve())
+            _write_once(run_dir / "run.json", _json_bytes(run))
+            events.append(
+                {
+                    "event": event_name,
+                    "run_key": run_key,
+                    "tree_hash": expected_tree_hash,
+                }
+            )
+
+        retry = {
+            "format": RETRY_FORMAT,
+            "parent_root": str(parent_root),
+            "parent_plan_id": parent_marker["plan_id"],
+            "parent_execution_status": parent_execution.get("status"),
+            "parent_execution_marker_sha256": parent_execution_marker_hash,
+            "inherited_run_keys": list(inherited),
+            "retry_run_keys": list(retried),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write_once(root / "retry.json", _json_bytes(retry))
+        events.append(
+            {
+                "event": "retry_preparation_completed",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "inherited_run_count": len(inherited),
+                "retry_run_count": len(retried),
+            }
+        )
+        _write_once(
+            root / "preparation.jsonl",
+            b"".join(
+                json.dumps(event, sort_keys=True, ensure_ascii=False).encode("utf-8") + b"\n"
+                for event in events
+            ),
+        )
+        marker = {
+            "format": PREPARED_FORMAT,
+            "root": str(root),
+            "experiment": experiment_name,
+            "plan_id": plan_id,
+            "input_hash": parent_marker["input_hash"],
+            "seed_repo": str(seed_repo),
+            "seed_commit": parent_marker["seed_commit"],
+            "baseline_fingerprint": parent_marker["baseline_fingerprint"],
+            "workspace_mode": "copy",
+            "run_keys": run_keys,
+            "retry": "retry.json",
+            "evidence_sha256": _evidence_hashes(root),
+            "prepared_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write_once(root / "prepared.json", _json_bytes(marker))
+        verify_prepared(root)
+    except Exception:
+        _remove_tree(root)
+        raise
+
+    return PreparedRetry(
+        root=root,
+        plan_id=plan_id,
+        parent_root=parent_root,
+        inherited_run_keys=inherited,
+        retry_run_keys=retried,
+    )
 
 
 def discard_prepared(root: str | Path) -> dict[str, Any]:

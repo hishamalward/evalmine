@@ -17,11 +17,12 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .experiment import ExperimentError
 from .suite import SECRET_PATTERNS
@@ -303,6 +304,20 @@ def _load_prepared(root: str | Path) -> tuple[Path, dict[str, Any], dict[str, An
     return resolved, marker, plan
 
 
+def _prepared_retry(root: Path, marker: dict[str, Any]) -> dict[str, Any] | None:
+    declared = marker.get("retry")
+    if declared is None:
+        return None
+    if declared != "retry.json":
+        raise RunnerError("prepared retry marker must reference retry.json")
+    retry = _read_json(root / declared)
+    inherited = retry.get("inherited_run_keys")
+    retried = retry.get("retry_run_keys")
+    if not isinstance(inherited, list) or not isinstance(retried, list):
+        raise RunnerError("prepared retry has invalid inherited or retry run keys")
+    return retry
+
+
 def _resolve_executable(
     runner: str, overrides: dict[str, str] | None
 ) -> str | None:
@@ -488,7 +503,10 @@ def preflight_experiment(
     issues: list[str] = []
     if plan.get("isolation", {}).get("session") != "fresh-per-run":
         issues.append("session=reuse-per-arm is not executable; use fresh-per-run")
-    run_keys = marker.get("run_keys", [])
+    retry = _prepared_retry(resolved, marker)
+    run_keys = (
+        retry["retry_run_keys"] if retry is not None else marker.get("run_keys", [])
+    )
     run_docs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     runners: set[str] = set()
     for run_key in run_keys:
@@ -1251,20 +1269,55 @@ def execute_experiment(
         probe.runner: probe.executable for probe in preflight.probes if probe.executable
     }
     run_keys = list(marker["run_keys"])
-    max_parallel = max(1, int(plan.get("schedule", {}).get("max_parallel", 1)))
+    retry = _prepared_retry(resolved, marker)
+    execute_run_keys = list(retry["retry_run_keys"]) if retry is not None else run_keys
+    inherited_run_keys = (
+        list(retry["inherited_run_keys"]) if retry is not None else []
+    )
+    max_parallel = min(
+        len(execute_run_keys),
+        max(1, int(plan.get("schedule", {}).get("max_parallel", 1))),
+    )
     started_event = {
         "event": "execution_started",
         "at": _now(),
-        "run_count": len(run_keys),
+        "run_count": len(execute_run_keys),
         "max_parallel": max_parallel,
     }
+    if retry is not None:
+        started_event.update(
+            {
+                "total_run_count": len(run_keys),
+                "inherited_run_count": len(inherited_run_keys),
+            }
+        )
     ledger: list[dict[str, Any]] = [started_event]
     _emit_progress(progress, started_event)
     summaries: dict[str, dict[str, Any]] = {}
     try:
+        if retry is not None:
+            inherited_root = resolved / "provenance" / "parent-execution" / "runs"
+            for run_key in inherited_run_keys:
+                source = inherited_root / run_key
+                destination = execution_root / "runs" / run_key
+                shutil.copytree(source, destination, symlinks=True)
+                summary = _read_json(destination / "run.json")
+                if summary.get("status") != "succeeded":
+                    raise RunnerError(
+                        f"retry provenance inherited non-successful run {run_key}"
+                    )
+                summaries[run_key] = summary
+                ledger.append(
+                    {
+                        "event": "run_inherited",
+                        "at": _now(),
+                        "run_key": run_key,
+                        "parent_plan_id": retry["parent_plan_id"],
+                    }
+                )
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
             futures = {}
-            for run_position, run_key in enumerate(run_keys, start=1):
+            for run_position, run_key in enumerate(execute_run_keys, start=1):
                 run = _read_json(resolved / "runs" / run_key / "run.json")
                 runner = run["runner"]
                 future = pool.submit(
@@ -1278,7 +1331,7 @@ def execute_experiment(
                     driver=driver,
                     external_write_allowlist=external_by_run[run_key],
                     run_position=run_position,
-                    run_count=len(run_keys),
+                    run_count=len(execute_run_keys),
                     progress=progress,
                 )
                 futures[future] = (run_key, run_position, run)
@@ -1302,7 +1355,7 @@ def execute_experiment(
                     "event": "run_completed",
                     "at": _now(),
                     "run_position": run_position,
-                    "run_count": len(run_keys),
+                    "run_count": len(execute_run_keys),
                     "run_key": run_key,
                     "arm": run["arm"],
                     "runner": run["runner"],
@@ -1390,6 +1443,17 @@ def execute_experiment(
             "environment_values_captured": False,
             "evidence_sha256": _execution_hashes(execution_root),
         }
+        if retry is not None:
+            execution_marker["retry"] = {
+                "format": retry["format"],
+                "parent_root": retry["parent_root"],
+                "parent_plan_id": retry["parent_plan_id"],
+                "parent_execution_marker_sha256": retry[
+                    "parent_execution_marker_sha256"
+                ],
+                "inherited_run_keys": inherited_run_keys,
+                "retried_run_keys": execute_run_keys,
+            }
         _write_execution(execution_root / "execution.json", _json_bytes(execution_marker))
         _emit_progress(progress, completed_event)
         return ExecutionResult(

@@ -63,7 +63,12 @@ from .workflow import (
     verify_workflow,
     workflow_plan,
 )
-from .workspace import discard_prepared, prepare_experiment, verify_prepared
+from .workspace import (
+    discard_prepared,
+    prepare_experiment,
+    prepare_failed_run_retry,
+    verify_prepared,
+)
 
 EXIT_OK = 0
 EXIT_USAGE = 1
@@ -84,8 +89,12 @@ def _format_progress_duration(duration_ms: object) -> str:
 def _print_experiment_progress(event: dict[str, object]) -> None:
     kind = event.get("event")
     if kind == "execution_started":
+        inherited = event.get("inherited_run_count")
+        prefix = "retry execution" if isinstance(inherited, int) else "execution"
+        inherited_text = f", {inherited} inherited" if isinstance(inherited, int) else ""
+        run_word = "run" if event["run_count"] == 1 else "runs"
         print(
-            f"execution started: {event['run_count']} runs, "
+            f"{prefix} started: {event['run_count']} {run_word}{inherited_text}, "
             f"max_parallel={event['max_parallel']}",
             file=sys.stderr,
             flush=True,
@@ -119,6 +128,8 @@ def _print_experiment_progress(event: dict[str, object]) -> None:
             file=sys.stderr,
             flush=True,
         )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="evalmine",
@@ -214,6 +225,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="artifact base directory; must be outside the seed repository",
     )
     experiment_prepare.add_argument("--json", action="store_true")
+    experiment_retry = experiment_subparsers.add_parser(
+        "retry",
+        help="prepare a derived envelope that executes only failed runs; launches nothing",
+    )
+    experiment_retry.add_argument("prepared", help="completed partial execution to inherit")
+    experiment_retry.add_argument(
+        "--out",
+        required=True,
+        help="artifact base directory; must be outside the seed repository",
+    )
+    experiment_retry.add_argument("--json", action="store_true")
     experiment_verify = experiment_subparsers.add_parser(
         "verify",
         help="verify workspaces and confirm that the baseline has not changed",
@@ -553,6 +575,20 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment(args: argparse.Namespace) -> int:
+    if args.experiment_verb == "retry":
+        result = prepare_failed_run_retry(args.prepared, args.out)
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            retry_count = len(result.retry_run_keys)
+            retry_label = "retry" if retry_count == 1 else "retries"
+            print(
+                f"ok: {result.root} - inherited {len(result.inherited_run_keys)} "
+                f"succeeded runs; prepared {retry_count} failed-run {retry_label}; "
+                "provider calls: 0"
+            )
+        return EXIT_OK
+
     if args.experiment_verb == "verify":
         result = verify_prepared(args.prepared)
         execution = None

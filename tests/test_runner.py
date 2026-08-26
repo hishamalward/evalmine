@@ -50,7 +50,13 @@ from evalmine.validators import (
     check_experiment,
     verify_validation,
 )
-from evalmine.workspace import discard_prepared, prepare_experiment, verify_prepared
+from evalmine.workspace import (
+    PreparationError,
+    discard_prepared,
+    prepare_experiment,
+    prepare_failed_run_retry,
+    verify_prepared,
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -416,6 +422,139 @@ def test_partial_runner_failure_keeps_evidence_and_returns_partial(
     assert (result.root / "runs" / codex_run.run_key / "turn-001.stderr.txt").is_file()
 
 
+def test_failed_run_retry_inherits_successes_and_executes_only_the_failure(
+    runner_experiment, fake_executables
+):
+    prepared, _, _ = runner_experiment
+    parent = execute_experiment(
+        prepared.root,
+        allow_provider_calls=True,
+        executable_overrides=fake_executables,
+        driver=FakeDriver(fail_runner="codex-cli"),
+    )
+    assert parent.status == "partial"
+
+    retry = prepare_failed_run_retry(
+        prepared.root, prepared.root.parent.parent / "retry-artifacts"
+    )
+    try:
+        assert len(retry.inherited_run_keys) == 2
+        assert len(retry.retry_run_keys) == 1
+        retry_run = retry.retry_run_keys[0]
+        assert "codex" in retry_run
+        verification = verify_prepared(retry.root)
+        assert verification["retry"] == {
+            "inherited_run_count": 2,
+            "retry_run_count": 1,
+        }
+
+        probe_driver = FakeDriver()
+        preflight = preflight_experiment(
+            retry.root,
+            executable_overrides=fake_executables,
+            driver=probe_driver,
+        )
+        assert preflight.ok is True
+        assert preflight.run_count == 1
+        assert [probe.runner for probe in preflight.probes] == ["codex-cli"]
+
+        driver = FakeDriver()
+        result = execute_experiment(
+            retry.root,
+            allow_provider_calls=True,
+            executable_overrides=fake_executables,
+            driver=driver,
+        )
+        assert result.status == "completed"
+        assert result.run_count == 3
+        assert result.succeeded == 3
+        calls = _execution_calls(driver)
+        assert len(calls) == 2
+        assert {call["runner"] for call in calls} == {"codex-cli"}
+        execution = json.loads(
+            (result.root / "execution.json").read_text(encoding="utf-8")
+        )
+        assert execution["retry"]["inherited_run_keys"] == list(
+            retry.inherited_run_keys
+        )
+        assert execution["retry"]["retried_run_keys"] == [retry_run]
+        assert verify_execution(retry.root)["status"] == "completed"
+
+        validation = check_experiment(retry.root)
+        assert validation.verdict == "passed"
+        assert validation.passed == 3
+        report = generate_experiment_report(retry.root)
+        assert report.run_count == 3
+        assert report.pair_count == 3
+
+        inherited_run = retry.inherited_run_keys[0]
+        parent_final = (
+            prepared.root
+            / "execution"
+            / "runs"
+            / inherited_run
+            / "turn-002.final.txt"
+        ).read_bytes()
+        retry_final = (
+            retry.root
+            / "execution"
+            / "runs"
+            / inherited_run
+            / "turn-002.final.txt"
+        ).read_bytes()
+        assert retry_final == parent_final
+    finally:
+        discard_prepared(retry.root)
+
+
+def test_failed_run_retry_refuses_a_non_pristine_failed_workspace(
+    runner_experiment, fake_executables
+):
+    prepared, _, _ = runner_experiment
+    execute_experiment(
+        prepared.root,
+        allow_provider_calls=True,
+        executable_overrides=fake_executables,
+        driver=FakeDriver(fail_runner="codex-cli"),
+    )
+    codex_run = next(run for run in prepared.runs if run.arm_id == "codex")
+    (codex_run.workspace / "README.md").write_text("changed after failure\n", encoding="utf-8")
+    with pytest.raises(PreparationError, match="not pristine"):
+        prepare_failed_run_retry(
+            prepared.root, prepared.root.parent.parent / "retry-artifacts"
+        )
+
+
+def test_cli_failed_run_retry_is_zero_provider_preparation(
+    runner_experiment, fake_executables, capsys
+):
+    prepared, _, _ = runner_experiment
+    execute_experiment(
+        prepared.root,
+        allow_provider_calls=True,
+        executable_overrides=fake_executables,
+        driver=FakeDriver(fail_runner="codex-cli"),
+    )
+    out = prepared.root.parent.parent / "cli-retry-artifacts"
+    assert (
+        main(
+            [
+                "experiment",
+                "retry",
+                str(prepared.root),
+                "--out",
+                str(out),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["provider_calls"] is False
+    assert result["retry_run_count"] == 1
+    discard_prepared(result["root"])
+
+
 def test_execution_reports_safe_progress_without_prompts(
     runner_experiment, fake_executables
 ):
@@ -451,6 +590,14 @@ def test_cli_progress_is_immediate_and_human_readable(capsys):
     )
     _print_experiment_progress(
         {
+            "event": "execution_started",
+            "run_count": 1,
+            "inherited_run_count": 2,
+            "max_parallel": 1,
+        }
+    )
+    _print_experiment_progress(
+        {
             "event": "turn_completed",
             "run_position": 2,
             "run_count": 3,
@@ -466,6 +613,7 @@ def test_cli_progress_is_immediate_and_human_readable(capsys):
     assert captured.out == ""
     assert captured.err.splitlines() == [
         "execution started: 3 runs, max_parallel=3",
+        "retry execution started: 1 run, 2 inherited, max_parallel=1",
         "[2/3] gpt-test (codex) - turn 1/2 succeeded - 6m09s",
     ]
 

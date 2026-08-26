@@ -123,7 +123,7 @@ evalmine experiment plan examples/agent-model-comparison.yaml --json
 The shipped [model comparison](examples/agent-model-comparison.yaml) compares Opus 5
 and Opus 4.6 through Claude Code with GPT-5.6 Sol through Codex CLI over a two-turn
 repository-redesign episode, run once per arm with fresh sessions: three isolated runs
-executed sequentially to limit local and subscription pressure.
+executed concurrently by default.
 Because the Sol arm changes both model and agent product, interpret it as an agent/model
 combination rather than a model-only effect. The companion
 [configuration ablation](examples/agent-config-ablation.yaml) holds the model fixed
@@ -184,6 +184,30 @@ Every run gets its own workspace and fresh session; follow-up turns resume only 
 that run. Raw JSONL, normalized events, tool activity, timing, requested/observed model,
 session identity, stderr, and final responses are written under `execution/`. A failed
 arm remains evidence while independent arms continue.
+
+If execution is partial because one or more runs fail, derive a self-contained retry
+envelope without repeating successful provider calls:
+
+```bash
+./.venv/bin/evalmine experiment retry \
+  /tmp/evalmine-runs/agent-model-working-style/<partial-plan-id> \
+  --out /tmp/evalmine-runs
+
+./.venv/bin/evalmine experiment preflight \
+  /tmp/evalmine-runs/agent-model-working-style/<retry-plan-id>
+
+./.venv/bin/evalmine experiment execute \
+  /tmp/evalmine-runs/agent-model-working-style/<retry-plan-id> \
+  --allow-provider-calls --turn-timeout 1800
+```
+
+`retry` launches nothing. It verifies and snapshots the complete parent execution,
+copies successful run evidence and final workspaces into a hash-linked provenance
+capsule, and prepares fresh execution only for failed runs whose workspaces remain at
+their original baseline. Retry currently requires `workspace: copy` and
+`external_writes: deny`. Execution preflight probes only the failed runners; after a
+successful retry, the derived envelope contains one complete three-arm execution for
+normal validation, reporting, and judging.
 
 Safety is fail-closed. Claude API-auth agent arms require `max_cost_usd` and receive
 the native `--max-budget-usd` ceiling. External-write allowlists require absolute
