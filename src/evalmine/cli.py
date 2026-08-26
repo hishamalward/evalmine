@@ -73,6 +73,52 @@ EXIT_REFUSED_PREFLIGHT = 4
 EXIT_ABORTED_OVER_BUDGET = 5
 
 
+def _format_progress_duration(duration_ms: object) -> str:
+    if not isinstance(duration_ms, (int, float)):
+        return ""
+    seconds = max(0, round(duration_ms / 1000))
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes}m{seconds:02d}s" if minutes else f"{seconds}s"
+
+
+def _print_experiment_progress(event: dict[str, object]) -> None:
+    kind = event.get("event")
+    if kind == "execution_started":
+        print(
+            f"execution started: {event['run_count']} runs, "
+            f"max_parallel={event['max_parallel']}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if kind in {"run_started", "run_completed", "turn_started", "turn_completed"}:
+        prefix = f"[{event['run_position']}/{event['run_count']}]"
+        subject = f"{event['model']} ({event['arm']})"
+        if kind == "run_started":
+            message = f"{prefix} {subject} - run started"
+        elif kind == "run_completed":
+            elapsed = _format_progress_duration(event.get("duration_ms"))
+            message = f"{prefix} {subject} - run {event['status']}"
+            if elapsed:
+                message += f" - {elapsed}"
+        else:
+            message = (
+                f"{prefix} {subject} - turn {event['turn']}/{event['turn_count']} "
+                f"{'started' if kind == 'turn_started' else event['status']}"
+            )
+            if kind == "turn_completed":
+                elapsed = _format_progress_duration(event.get("duration_ms"))
+                if elapsed:
+                    message += f" - {elapsed}"
+        print(message, file=sys.stderr, flush=True)
+        return
+    if kind == "execution_completed":
+        print(
+            f"execution {event['status']}: {event['succeeded']}/{event['run_count']} "
+            "runs succeeded",
+            file=sys.stderr,
+            flush=True,
+        )
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="evalmine",
@@ -578,6 +624,7 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             allow_external_writes=args.allow_external_writes,
             turn_timeout=args.turn_timeout,
             executable_overrides=overrides,
+            progress=None if args.json else _print_experiment_progress,
         )
         if args.json:
             print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))

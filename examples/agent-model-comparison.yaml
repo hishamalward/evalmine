@@ -15,7 +15,7 @@ isolation:
 
 schedule:
   order: rotate
-  max_parallel: 1
+  max_parallel: 3
 
 validators:
   repo-unchanged:

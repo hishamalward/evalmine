@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
-from evalmine.cli import EXIT_REFUSED_PREFLIGHT, main
+from evalmine.cli import EXIT_REFUSED_PREFLIGHT, _print_experiment_progress, main
 from evalmine.decision import (
     DecisionError,
     EpisodeJudgeCall,
@@ -202,6 +202,7 @@ class FakeDriver(ProcessDriver):
             "--json",
             "--sandbox",
             "--cd",
+            "--skip-git-repo-check",
             "resume",
             "--ask-for-approval",
             "--ignore-user-config",
@@ -374,6 +375,7 @@ def test_execute_maps_three_clis_reuses_only_run_local_sessions_and_writes_evide
     )
     codex = [call for call in calls if call["runner"] == "codex-cli"]
     assert "workspace-write" in codex[0]["args"]
+    assert all("--skip-git-repo-check" in call["args"] for call in codex)
     assert "--ignore-user-config" in codex[0]["args"]
     assert "resume" in codex[1]["args"]
     gemini = [call for call in calls if call["runner"] == "gemini-cli"]
@@ -410,7 +412,62 @@ def test_partial_runner_failure_keeps_evidence_and_returns_partial(
         (result.root / "runs" / codex_run.run_key / "run.json").read_text(encoding="utf-8")
     )
     assert run_evidence["status"] == "failed"
+    assert run_evidence["error"] == "turn 1 exited 9"
     assert (result.root / "runs" / codex_run.run_key / "turn-001.stderr.txt").is_file()
+
+
+def test_execution_reports_safe_progress_without_prompts(
+    runner_experiment, fake_executables
+):
+    prepared, _, _ = runner_experiment
+    events: list[dict[str, Any]] = []
+    result = execute_experiment(
+        prepared.root,
+        allow_provider_calls=True,
+        executable_overrides=fake_executables,
+        driver=FakeDriver(),
+        progress=events.append,
+    )
+
+    assert result.status == "completed"
+    assert events[0] == {
+        "event": "execution_started",
+        "at": events[0]["at"],
+        "run_count": 3,
+        "max_parallel": 3,
+    }
+    assert events[-1]["event"] == "execution_completed"
+    assert events[-1]["succeeded"] == 3
+    turn_starts = [event for event in events if event["event"] == "turn_started"]
+    turn_ends = [event for event in events if event["event"] == "turn_completed"]
+    assert len(turn_starts) == len(turn_ends) == 6
+    assert {event["run_position"] for event in turn_starts} == {1, 2, 3}
+    assert all("prompt" not in event for event in events)
+
+
+def test_cli_progress_is_immediate_and_human_readable(capsys):
+    _print_experiment_progress(
+        {"event": "execution_started", "run_count": 3, "max_parallel": 3}
+    )
+    _print_experiment_progress(
+        {
+            "event": "turn_completed",
+            "run_position": 2,
+            "run_count": 3,
+            "model": "gpt-test",
+            "arm": "codex",
+            "turn": 1,
+            "turn_count": 2,
+            "status": "succeeded",
+            "duration_ms": 369_000,
+        }
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        "execution started: 3 runs, max_parallel=3",
+        "[2/3] gpt-test (codex) - turn 1/2 succeeded - 6m09s",
+    ]
 
 
 def test_execution_verification_detects_tampering(runner_experiment, fake_executables):

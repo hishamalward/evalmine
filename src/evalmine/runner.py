@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .experiment import ExperimentError
 from .suite import SECRET_PATTERNS
@@ -64,6 +64,7 @@ _REQUIRED_HELP = {
         "--model",
         "--sandbox",
         "--cd",
+        "--skip-git-repo-check",
         "resume",
         "--ask-for-approval",
         "--ignore-user-config",
@@ -141,6 +142,8 @@ _RESERVED_SETTING_PARTS = {
 
 _SECRET_ENV_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _write_lock = threading.Lock()
+_progress_lock = threading.Lock()
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 class RunnerError(ExperimentError):
@@ -645,7 +648,13 @@ def _build_command(
         config_args: list[str] = []
         for key, value in settings.items():
             config_args.extend(["--config", f"{key}={_toml_scalar(value)}"])
-        common = ["--json", "--model", model, *config_args]
+        common = [
+            "--json",
+            "--model",
+            model,
+            "--skip-git-repo-check",
+            *config_args,
+        ]
         if treatment.get("plugins") == "none":
             common.append("--ignore-user-config")
         if turn_index == 1:
@@ -955,6 +964,16 @@ def _write_execution(path: Path, content: bytes) -> None:
         _write_once(path, content)
 
 
+def _emit_progress(
+    progress: ProgressCallback | None,
+    event: dict[str, Any],
+) -> None:
+    if progress is None:
+        return
+    with _progress_lock:
+        progress(event)
+
+
 def _run_one(
     *,
     root: Path,
@@ -965,6 +984,9 @@ def _run_one(
     timeout: int,
     driver: ProcessDriver,
     external_write_allowlist: tuple[str, ...],
+    run_position: int,
+    run_count: int,
+    progress: ProgressCallback | None,
 ) -> dict[str, Any]:
     source_dir = root / "runs" / run_key
     run = _read_json(source_dir / "run.json")
@@ -987,6 +1009,19 @@ def _run_one(
     status = "succeeded"
     error: str | None = None
     observed_model: str | None = None
+    progress_context = {
+        "run_position": run_position,
+        "run_count": run_count,
+        "run_key": run_key,
+        "arm": run["arm"],
+        "runner": runner,
+        "model": run["model"],
+        "turn_count": total_turns,
+    }
+    _emit_progress(
+        progress,
+        {"event": "run_started", "at": started_at, **progress_context},
+    )
     for turn_index in range(1, total_turns + 1):
         prompt = prompts.get((episode_id, turn_index))
         if prompt is None:
@@ -1023,6 +1058,15 @@ def _run_one(
                 credential_env_names=credential_env_names,
             )
             turn_started = _now()
+            _emit_progress(
+                progress,
+                {
+                    "event": "turn_started",
+                    "at": turn_started,
+                    "turn": turn_index,
+                    **progress_context,
+                },
+            )
             process = driver.run(
                 command,
                 cwd=workspace,
@@ -1052,7 +1096,7 @@ def _run_one(
             and not malformed
             and bool(final.strip())
         )
-        if turn_index < total_turns and session_id is None:
+        if turn_ok and turn_index < total_turns and session_id is None:
             turn_ok = False
             error = "runner emitted no session identifier for a follow-up"
         if not turn_ok and error is None:
@@ -1087,6 +1131,17 @@ def _run_one(
         }
         _write_execution(stem.with_suffix(".json"), _json_bytes(summary))
         turn_summaries.append(summary)
+        _emit_progress(
+            progress,
+            {
+                "event": "turn_completed",
+                "at": summary["completed_at"],
+                "turn": turn_index,
+                "status": summary["status"],
+                "duration_ms": process.duration_ms,
+                **progress_context,
+            },
+        )
         if not turn_ok:
             status = "failed"
             break
@@ -1148,6 +1203,7 @@ def execute_experiment(
     turn_timeout: int = DEFAULT_TURN_TIMEOUT,
     executable_overrides: dict[str, str] | None = None,
     driver: ProcessDriver | None = None,
+    progress: ProgressCallback | None = None,
 ) -> ExecutionResult:
     """Execute every prepared run after a fresh fail-closed preflight."""
     if not allow_provider_calls:
@@ -1196,19 +1252,19 @@ def execute_experiment(
     }
     run_keys = list(marker["run_keys"])
     max_parallel = max(1, int(plan.get("schedule", {}).get("max_parallel", 1)))
-    ledger: list[dict[str, Any]] = [
-        {
-            "event": "execution_started",
-            "at": _now(),
-            "run_count": len(run_keys),
-            "max_parallel": max_parallel,
-        }
-    ]
+    started_event = {
+        "event": "execution_started",
+        "at": _now(),
+        "run_count": len(run_keys),
+        "max_parallel": max_parallel,
+    }
+    ledger: list[dict[str, Any]] = [started_event]
+    _emit_progress(progress, started_event)
     summaries: dict[str, dict[str, Any]] = {}
     try:
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
             futures = {}
-            for run_key in run_keys:
+            for run_position, run_key in enumerate(run_keys, start=1):
                 run = _read_json(resolved / "runs" / run_key / "run.json")
                 runner = run["runner"]
                 future = pool.submit(
@@ -1221,10 +1277,13 @@ def execute_experiment(
                     timeout=turn_timeout,
                     driver=driver,
                     external_write_allowlist=external_by_run[run_key],
+                    run_position=run_position,
+                    run_count=len(run_keys),
+                    progress=progress,
                 )
-                futures[future] = run_key
+                futures[future] = (run_key, run_position, run)
             for future in as_completed(futures):
-                run_key = futures[future]
+                run_key, run_position, run = futures[future]
                 try:
                     summary = future.result()
                 except Exception as exc:  # evidence must survive one broken worker
@@ -1239,14 +1298,20 @@ def execute_experiment(
                     if not (run_output / "run.json").exists():
                         _write_execution(run_output / "run.json", _json_bytes(summary))
                 summaries[run_key] = summary
-                ledger.append(
-                    {
-                        "event": "run_completed",
-                        "at": _now(),
-                        "run_key": run_key,
-                        "status": summary["status"],
-                    }
-                )
+                run_completed = {
+                    "event": "run_completed",
+                    "at": _now(),
+                    "run_position": run_position,
+                    "run_count": len(run_keys),
+                    "run_key": run_key,
+                    "arm": run["arm"],
+                    "runner": run["runner"],
+                    "model": run["model"],
+                    "status": summary["status"],
+                    "duration_ms": summary.get("duration_ms"),
+                }
+                ledger.append(run_completed)
+                _emit_progress(progress, run_completed)
         baseline_ok = True
         baseline_error = None
         try:
@@ -1262,16 +1327,16 @@ def execute_experiment(
         external_after = {
             target: _tree_hash(Path(target)) for target in external_targets
         }
-        ledger.append(
-            {
-                "event": "execution_completed",
-                "at": _now(),
-                "status": status,
-                "succeeded": succeeded,
-                "failed": failed,
-                "baseline_unchanged": baseline_ok,
-            }
-        )
+        completed_event = {
+            "event": "execution_completed",
+            "at": _now(),
+            "status": status,
+            "run_count": len(run_keys),
+            "succeeded": succeeded,
+            "failed": failed,
+            "baseline_unchanged": baseline_ok,
+        }
+        ledger.append(completed_event)
         _write_execution(
             execution_root / "execution.jsonl",
             b"".join(
@@ -1326,6 +1391,7 @@ def execute_experiment(
             "evidence_sha256": _execution_hashes(execution_root),
         }
         _write_execution(execution_root / "execution.json", _json_bytes(execution_marker))
+        _emit_progress(progress, completed_event)
         return ExecutionResult(
             root=execution_root,
             status=status,
