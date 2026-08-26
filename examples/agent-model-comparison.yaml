@@ -1,6 +1,6 @@
-experiment: opus-working-style
+experiment: claude-model-working-style
 version: 2
-question: Which Opus generation works best on my real repository tasks?
+question: Which Claude model works best on my real repository tasks?
 
 seed:
   repo: ..
@@ -38,9 +38,9 @@ arms:
       instructions: inherit
       plugins: inherit
 
-  - id: opus-4-8-current
+  - id: sonnet-5-current
     runner: claude-code
-    model: claude-opus-4-8
+    model: claude-sonnet-5
     auth: subscription
     configuration:
       instructions: inherit

@@ -140,10 +140,10 @@ seed checkout, and put artifacts outside that repository:
   --out /tmp/evalmine-runs
 
 ./.venv/bin/evalmine experiment verify \
-  /tmp/evalmine-runs/opus-working-style/<plan-id>
+  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
 
 ./.venv/bin/evalmine experiment discard \
-  /tmp/evalmine-runs/opus-working-style/<plan-id> --yes
+  /tmp/evalmine-runs/claude-model-working-style/<plan-id> --yes
 ```
 
 Preparation resolves the seed commit, enforces the tracked/untracked policy, and
@@ -164,14 +164,14 @@ the prepared envelope, makes zero model calls, and writes nothing:
 
 ```bash
 ./.venv/bin/evalmine experiment preflight \
-  /tmp/evalmine-runs/opus-working-style/<plan-id>
+  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
 ```
 
 Execution is a separate, explicit boundary:
 
 ```bash
 ./.venv/bin/evalmine experiment execute \
-  /tmp/evalmine-runs/opus-working-style/<plan-id> \
+  /tmp/evalmine-runs/claude-model-working-style/<plan-id> \
   --allow-provider-calls --turn-timeout 1800
 ```
 
@@ -199,7 +199,7 @@ required-section checks:
 
 ```bash
 ./.venv/bin/evalmine experiment check \
-  /tmp/evalmine-runs/opus-working-style/<plan-id>
+  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
 ```
 
 Validator names are declared at the manifest top level and referenced by episodes.
@@ -251,7 +251,7 @@ blind review queue:
 
 ```bash
 ./.venv/bin/evalmine experiment report \
-  /tmp/evalmine-runs/opus-working-style/<plan-id>
+  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
 ```
 
 The command writes `<prepared-dir>/report/index.html`. It launches no provider runner
