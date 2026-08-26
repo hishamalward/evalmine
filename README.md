@@ -120,9 +120,9 @@ evalmine experiment plan examples/agent-model-comparison.yaml
 evalmine experiment plan examples/agent-model-comparison.yaml --json
 ```
 
-The shipped [model comparison](examples/agent-model-comparison.yaml) plans three Opus
-arms over a two-turn repository-redesign episode, repeated three times with fresh
-sessions: nine isolated runs. The companion
+The shipped [model comparison](examples/agent-model-comparison.yaml) compares Opus 5,
+Sonnet 5, and Opus 4.6 over a two-turn repository-redesign episode, repeated twice
+with fresh sessions: six isolated runs. The companion
 [configuration ablation](examples/agent-config-ablation.yaml) holds the model fixed
 while comparing current, no-config, and candidate-config treatments. `configuration` can set
 `instructions` to `inherit`, `none`, or `files`, and `plugins` to `inherit`, `none`,

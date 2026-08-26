@@ -64,7 +64,7 @@ episodes:
           the current architecture, the largest uncontrolled variable in your proposed
           experiment, and the smallest implementation slice that proves the design.
     validators: [repo-unchanged, required-sections]
-    repeats: 3
+    repeats: 2
 
 evaluation:
   objectives:
