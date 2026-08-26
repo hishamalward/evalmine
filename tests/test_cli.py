@@ -183,7 +183,7 @@ def test_experiment_plan_prints_rotated_schedule(capsys):
     assert run_cli("experiment", "plan", str(EXAMPLE_EXPERIMENT)) == 0
     out = capsys.readouterr().out
     assert "opus-5-current" in out
-    assert "sonnet-5-current" in out
+    assert "gpt-5-6-sol-current" in out
     assert "dry run only" in out
 
 

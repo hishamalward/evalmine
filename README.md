@@ -120,9 +120,11 @@ evalmine experiment plan examples/agent-model-comparison.yaml
 evalmine experiment plan examples/agent-model-comparison.yaml --json
 ```
 
-The shipped [model comparison](examples/agent-model-comparison.yaml) compares Opus 5,
-Sonnet 5, and Opus 4.6 over a two-turn repository-redesign episode, repeated twice
-with fresh sessions: six isolated runs. The companion
+The shipped [model comparison](examples/agent-model-comparison.yaml) compares Opus 5
+and Opus 4.6 through Claude Code with GPT-5.6 Sol through Codex CLI over a two-turn
+repository-redesign episode, repeated twice with fresh sessions: six isolated runs.
+Because the Sol arm changes both model and agent product, interpret it as an agent/model
+combination rather than a model-only effect. The companion
 [configuration ablation](examples/agent-config-ablation.yaml) holds the model fixed
 while comparing current, no-config, and candidate-config treatments. `configuration` can set
 `instructions` to `inherit`, `none`, or `files`, and `plugins` to `inherit`, `none`,
@@ -140,10 +142,10 @@ seed checkout, and put artifacts outside that repository:
   --out /tmp/evalmine-runs
 
 ./.venv/bin/evalmine experiment verify \
-  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
+  /tmp/evalmine-runs/agent-model-working-style/<plan-id>
 
 ./.venv/bin/evalmine experiment discard \
-  /tmp/evalmine-runs/claude-model-working-style/<plan-id> --yes
+  /tmp/evalmine-runs/agent-model-working-style/<plan-id> --yes
 ```
 
 Preparation resolves the seed commit, enforces the tracked/untracked policy, and
@@ -164,14 +166,14 @@ the prepared envelope, makes zero model calls, and writes nothing:
 
 ```bash
 ./.venv/bin/evalmine experiment preflight \
-  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
+  /tmp/evalmine-runs/agent-model-working-style/<plan-id>
 ```
 
 Execution is a separate, explicit boundary:
 
 ```bash
 ./.venv/bin/evalmine experiment execute \
-  /tmp/evalmine-runs/claude-model-working-style/<plan-id> \
+  /tmp/evalmine-runs/agent-model-working-style/<plan-id> \
   --allow-provider-calls --turn-timeout 1800
 ```
 
@@ -199,7 +201,7 @@ required-section checks:
 
 ```bash
 ./.venv/bin/evalmine experiment check \
-  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
+  /tmp/evalmine-runs/agent-model-working-style/<plan-id>
 ```
 
 Validator names are declared at the manifest top level and referenced by episodes.
@@ -251,7 +253,7 @@ blind review queue:
 
 ```bash
 ./.venv/bin/evalmine experiment report \
-  /tmp/evalmine-runs/claude-model-working-style/<plan-id>
+  /tmp/evalmine-runs/agent-model-working-style/<plan-id>
 ```
 
 The command writes `<prepared-dir>/report/index.html`. It launches no provider runner

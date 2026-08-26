@@ -1,6 +1,6 @@
-experiment: claude-model-working-style
+experiment: agent-model-working-style
 version: 2
-question: Which Claude model works best on my real repository tasks?
+question: Which agent/model combination works best on my real repository tasks?
 
 seed:
   repo: ..
@@ -38,9 +38,9 @@ arms:
       instructions: inherit
       plugins: inherit
 
-  - id: sonnet-5-current
-    runner: claude-code
-    model: claude-sonnet-5
+  - id: gpt-5-6-sol-current
+    runner: codex-cli
+    model: gpt-5.6-sol
     auth: subscription
     configuration:
       instructions: inherit
