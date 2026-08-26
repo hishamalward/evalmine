@@ -12,6 +12,7 @@ htmlcov/
 
 # runtime output
 .evalmine-cache/
+.evalmine-tools/
 reports/
 
 # never

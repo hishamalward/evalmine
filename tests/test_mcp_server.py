@@ -37,6 +37,10 @@ def mcp_env(tmp_path, monkeypatch):
         "EVALMINE_MCP_SUITE_ROOT",
         "EVALMINE_MCP_MAX_COST",
         "EVALMINE_MCP_MAX_COST_CEILING",
+        "EVALMINE_MCP_ALLOW_PROVIDER_CALLS",
+        "EVALMINE_MCP_ALLOW_VALIDATOR_COMMANDS",
+        "EVALMINE_MCP_ALLOW_EXTERNAL_WRITES",
+        "EVALMINE_MCP_ALLOW_WORKFLOW_COMMANDS",
     )
     for name in env_names:
         monkeypatch.delenv(name, raising=False)
@@ -202,3 +206,64 @@ def test_run_suite_refuses_a_max_cost_above_the_ceiling(mcp_env, monkeypatch):
     assert out["reason"] == "max_cost_exceeds_ceiling"
     assert out["ceiling_usd"] == 5.00
     assert not (mcp_env / "reports").exists()
+
+
+# --------------------------------------------------------------------------
+# v2 episode/workflow control plane
+# --------------------------------------------------------------------------
+
+
+def test_v2_workflow_plan_is_zero_action_and_run_requires_server_and_client_gates(mcp_env):
+    seed = mcp_env / "seed"
+    seed.mkdir()
+    fixture = mcp_env / "fixture.json"
+    fixture.write_text('{"ok": true}\n', encoding="utf-8")
+    manifest = mcp_env / "workflow.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "workflow": "mcp-dag",
+                "version": 1,
+                "root": "seed",
+                "fixtures": [
+                    {"source": "fixture.json", "target": "input/fixture.json"}
+                ],
+                "nodes": [
+                    {
+                        "id": "one",
+                        "argv": ["does-not-run-during-plan"],
+                        "artifacts": [],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    planned = call_tool("plan_workflow", {"manifest_path": manifest.name})
+    assert planned.is_error is False
+    assert planned.structured_content["commands_launched"] is False
+    assert planned.structured_content["instance_count"] == 1
+
+    refused = call_tool(
+        "run_workflow_tool",
+        {
+            "manifest_path": manifest.name,
+            "out_dir": "workflow-runs",
+            "confirm_commands": True,
+        },
+    )
+    assert refused.is_error is False
+    assert refused.structured_content == {
+        "refused": True,
+        "reason": "workflow_commands_not_authorized",
+    }
+    assert not (mcp_env / "workflow-runs").exists()
+
+
+def test_v2_experiment_paths_cannot_escape_the_mcp_root(mcp_env, tmp_path):
+    outside = tmp_path.parent / "outside-experiment.yaml"
+    result = call_tool("plan_experiment", {"manifest_path": str(outside)})
+    assert result.is_error is False
+    assert result.structured_content["refused"] is True
+    assert result.structured_content["reason"] == "manifest_path_outside_root"

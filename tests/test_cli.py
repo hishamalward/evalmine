@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import EXAMPLE_SUITE, PRICES_DIR
+from conftest import EXAMPLE_SUITE, PRICES_DIR, REPO_ROOT
 
 from evalmine.cli import main
 
 PRICE_FILE = str(PRICES_DIR / "prices-2026-08-23.yaml")
 MODELS = "anthropic/claude-haiku-4-5,google/gemini-2.5-flash"
+EXAMPLE_EXPERIMENT = REPO_ROOT / "examples" / "agent-model-comparison.yaml"
 
 
 def run_cli(*args) -> int:
@@ -168,6 +169,36 @@ def test_validate_catches_a_model_the_price_table_does_not_know(tmp_path, capsys
     )
     assert run_cli("validate", str(suite), "--prices", PRICE_FILE) == 1
     assert "claude-imaginary-9" in capsys.readouterr().err
+
+
+def test_experiment_validate_is_explicitly_zero_execution(capsys):
+    assert run_cli("experiment", "validate", str(EXAMPLE_EXPERIMENT)) == 0
+    out = capsys.readouterr().out
+    assert "3 arms" in out
+    assert "9 planned runs" in out
+    assert "no agents launched" in out
+
+
+def test_experiment_plan_prints_rotated_schedule(capsys):
+    assert run_cli("experiment", "plan", str(EXAMPLE_EXPERIMENT)) == 0
+    out = capsys.readouterr().out
+    assert "opus-5-current" in out
+    assert "opus-4-8-current" in out
+    assert "dry run only" in out
+
+
+def test_experiment_plan_json_is_machine_readable(capsys):
+    assert run_cli("experiment", "plan", str(EXAMPLE_EXPERIMENT), "--json") == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["schedule"]["run_count"] == 9
+    assert len(plan["runs"]) == 9
+
+
+def test_bad_experiment_exits_one(tmp_path, capsys):
+    manifest = tmp_path / "bad.yaml"
+    manifest.write_text("experiment: bad\nversion: 2\n", encoding="utf-8")
+    assert run_cli("experiment", "validate", str(manifest)) == 1
+    assert "error:" in capsys.readouterr().err
 
 
 def test_prices_prints_the_table_with_no_unverified_warning(capsys):

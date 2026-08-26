@@ -1,0 +1,769 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>evalmine — repository audit, v2 plan &amp; implementation status</title>
+  <style>
+    :root {
+      --paper: #f3efe7;
+      --paper-2: #ebe4d8;
+      --ink: #17201e;
+      --muted: #64706c;
+      --line: #cfc7ba;
+      --panel: rgba(255,255,255,.64);
+      --panel-solid: #fbf8f2;
+      --green: #176b55;
+      --green-2: #d9ebe4;
+      --teal: #087f8c;
+      --orange: #c55b2e;
+      --orange-2: #f3ddd1;
+      --amber: #c58a19;
+      --amber-2: #f4e8c9;
+      --red: #a93b32;
+      --red-2: #f2d9d5;
+      --navy: #183e4d;
+      --shadow: 0 18px 55px rgba(42, 48, 44, .09);
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 85% 2%, rgba(8,127,140,.10), transparent 26rem),
+        radial-gradient(circle at 3% 32%, rgba(197,91,46,.09), transparent 28rem),
+        var(--paper);
+      color: var(--ink);
+      font: 15px/1.55 var(--sans);
+    }
+    a { color: var(--teal); }
+    button, input { font: inherit; }
+    code, pre { font-family: var(--mono); }
+    .shell { display: grid; grid-template-columns: 242px minmax(0, 1fr); min-height: 100vh; }
+    .rail {
+      position: sticky; top: 0; height: 100vh; padding: 28px 22px;
+      border-right: 1px solid var(--line); background: rgba(243,239,231,.88);
+      backdrop-filter: blur(15px); z-index: 10;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 780; letter-spacing: -.02em; }
+    .mark { width: 28px; height: 28px; border: 2px solid var(--ink); border-radius: 50%; position: relative; }
+    .mark:before, .mark:after { content: ""; position: absolute; background: var(--orange); }
+    .mark:before { width: 2px; height: 34px; left: 12px; top: -5px; transform: rotate(35deg); }
+    .mark:after { width: 8px; height: 8px; border-radius: 50%; right: -3px; bottom: 1px; }
+    .eyebrow { text-transform: uppercase; letter-spacing: .14em; font: 700 10px/1.3 var(--mono); color: var(--orange); }
+    .rail .meta { margin: 26px 0; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .rail nav { display: grid; gap: 2px; }
+    .rail nav a { text-decoration: none; color: var(--muted); padding: 7px 9px; border-radius: 7px; font-size: 13px; }
+    .rail nav a:hover { background: rgba(255,255,255,.7); color: var(--ink); }
+    .rail .guard { position: absolute; bottom: 24px; left: 22px; right: 22px; color: var(--green); font-size: 11px; }
+    .guard:before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 7px; }
+    main { width: min(1420px, 100%); min-width: 0; padding: 54px clamp(24px, 4vw, 72px) 100px; }
+    section { scroll-margin-top: 24px; margin-top: 74px; }
+    section:first-child { margin-top: 0; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: clamp(46px, 6vw, 86px); line-height: .98; letter-spacing: -.055em; max-width: 1050px; margin: 14px 0 25px; }
+    h2 { font-size: clamp(28px, 3.1vw, 46px); line-height: 1.06; letter-spacing: -.035em; margin-bottom: 12px; }
+    h3 { font-size: 18px; line-height: 1.25; letter-spacing: -.015em; }
+    .lede { font-size: clamp(18px, 2vw, 23px); line-height: 1.45; max-width: 850px; color: #3b4743; }
+    .sublede { max-width: 830px; color: var(--muted); font-size: 16px; }
+    .hero-badge { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #9ab9ac; background: var(--green-2); color: var(--green); border-radius: 99px; padding: 7px 11px; font: 700 11px/1 var(--mono); }
+    .hero-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .verdict { margin-top: 36px; display: grid; grid-template-columns: 1.3fr .7fr; gap: 18px; }
+    .verdict-main { background: var(--ink); color: #f7f2e8; border-radius: 20px; padding: clamp(24px, 4vw, 46px); box-shadow: var(--shadow); position: relative; overflow: hidden; }
+    .verdict-main:after { content: "02"; position: absolute; right: 18px; bottom: -28px; font: 800 150px/1 var(--mono); color: rgba(255,255,255,.04); }
+    .verdict-main .eyebrow { color: #f0a477; }
+    .verdict-main h2 { max-width: 680px; font-size: clamp(31px, 4vw, 56px); margin: 12px 0 18px; }
+    .verdict-main p { max-width: 760px; color: #bfcac5; font-size: 17px; }
+    .verdict-side { display: grid; gap: 12px; }
+    .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px; min-height: 115px; }
+    .stat b { display: block; font: 760 34px/1 var(--mono); letter-spacing: -.05em; margin-bottom: 10px; }
+    .stat span { color: var(--muted); font-size: 13px; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 25px; padding-bottom: 18px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+    .section-head p { max-width: 530px; margin-bottom: 2px; color: var(--muted); }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; box-shadow: 0 5px 22px rgba(42,48,44,.035); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; }
+    .tag { display: inline-flex; border-radius: 999px; padding: 4px 8px; font: 700 10px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    .yes { background: var(--green-2); color: var(--green); }
+    .partial { background: var(--amber-2); color: #78510c; }
+    .no { background: var(--red-2); color: var(--red); }
+    .new { background: #dbe8ed; color: var(--navy); }
+    .flow { display: flex; align-items: stretch; gap: 10px; overflow-x: auto; padding: 8px 2px 12px; }
+    .node { flex: 1 0 150px; min-height: 104px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-solid); padding: 15px; position: relative; }
+    .node b { display: block; margin-bottom: 6px; }
+    .node small { color: var(--muted); }
+    .node:after { content: "→"; position: absolute; right: -18px; top: 36px; font: 800 22px var(--mono); color: var(--orange); z-index: 2; }
+    .node:last-child:after { content: none; }
+    .node.hot { border-color: #d29a7e; background: var(--orange-2); }
+    .node.good { border-color: #97b8aa; background: var(--green-2); }
+    .callout { margin-top: 16px; border-left: 4px solid var(--orange); background: rgba(255,255,255,.52); padding: 15px 18px; border-radius: 0 12px 12px 0; color: #3f4946; }
+    .fit-table { display: grid; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: rgba(255,255,255,.48); }
+    .fit-row { display: grid; grid-template-columns: 58px minmax(210px,.9fr) 105px minmax(280px,1.6fr) minmax(220px,1.2fr); gap: 0; border-bottom: 1px solid var(--line); }
+    .fit-row:last-child { border-bottom: 0; }
+    .fit-row > div { padding: 16px; border-right: 1px solid var(--line); }
+    .fit-row > div:last-child { border-right: 0; }
+    .fit-row.header { background: var(--ink); color: white; font: 700 10px/1.3 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .fit-row.header > div { padding: 11px 16px; }
+    .fit-row .num { font: 750 22px/1 var(--mono); color: var(--orange); }
+    .fit-row p { margin: 0; color: var(--muted); font-size: 13px; }
+    .fit-row strong { display: block; margin-bottom: 5px; }
+    .bar { height: 5px; background: #ddd6ca; border-radius: 9px; overflow: hidden; margin-top: 11px; }
+    .bar i { display: block; height: 100%; background: var(--amber); }
+    .split-title { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+    .split-title .dot { width: 11px; height: 11px; border-radius: 3px; }
+    ul.clean { list-style: none; padding: 0; margin: 0; }
+    ul.clean li { padding: 8px 0 8px 22px; border-bottom: 1px solid rgba(207,199,186,.65); position: relative; }
+    ul.clean li:last-child { border-bottom: 0; }
+    ul.clean li:before { content: "+"; position: absolute; left: 0; font: 800 14px var(--mono); color: var(--green); }
+    .replace li:before { content: "↻" !important; color: var(--orange) !important; }
+    .isolation { border: 1px solid var(--line); background: var(--panel); border-radius: 18px; padding: 24px; overflow: hidden; }
+    .seed { width: min(370px,100%); margin: 0 auto 28px; background: var(--ink); color: white; text-align: center; border-radius: 14px; padding: 17px; position: relative; }
+    .seed:after { content: ""; position: absolute; left: 50%; top: 100%; height: 29px; border-left: 2px solid var(--orange); }
+    .arms { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 13px; position: relative; }
+    .arms:before { content: ""; position: absolute; top: -15px; left: 16.6%; right: 16.6%; border-top: 2px solid var(--orange); }
+    .arm { border: 1px solid var(--line); border-radius: 14px; background: var(--panel-solid); padding: 18px; min-height: 220px; position: relative; }
+    .arm:before { content: ""; position: absolute; left: 50%; top: -15px; height: 15px; border-left: 2px solid var(--orange); }
+    .arm .stack { display: grid; gap: 6px; margin-top: 14px; }
+    .arm .stack span { background: var(--paper-2); border: 1px solid #ddd4c6; border-radius: 7px; padding: 7px 9px; font: 11px/1.35 var(--mono); }
+    .isolation-foot { display: flex; justify-content: center; gap: 9px; flex-wrap: wrap; margin-top: 18px; }
+    .chip { background: white; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 6px 10px; font-size: 11px; }
+    .lane { border-top: 5px solid var(--teal); }
+    .lane:nth-child(2) { border-color: var(--orange); }
+    .lane:nth-child(3) { border-color: var(--amber); }
+    .lane:nth-child(4) { border-color: var(--green); }
+    .lane .claim { margin-top: 13px; font-size: 12px; color: var(--muted); }
+    .manifest { background: #121b19; color: #dce9e4; border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
+    .manifest-head { display: flex; gap: 7px; align-items: center; padding: 12px 15px; background: #1b2825; border-bottom: 1px solid #33423e; color: #93a49f; font: 11px var(--mono); }
+    .manifest-head i { width: 8px; height: 8px; border-radius: 50%; background: #e07755; }
+    .manifest-head i:nth-child(2) { background: #e3b84e; }
+    .manifest-head i:nth-child(3) { background: #62a98c; }
+    pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .manifest pre { padding: 22px; font: 12px/1.65 var(--mono); max-height: 650px; overflow: auto; }
+    .k { color: #80c7bb; } .s { color: #edb17f; } .c { color: #778983; }
+    .ui { background: #111917; color: #e8efec; border: 1px solid #303b38; border-radius: 20px; box-shadow: var(--shadow); overflow: hidden; }
+    .ui-top { display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid #303b38; background: #18221f; }
+    .ui-top .crumb { color: #82908b; font: 11px var(--mono); }
+    .ui-top b { margin-right: auto; }
+    .ui-pill { border: 1px solid #42514c; color: #aebbb6; padding: 5px 8px; border-radius: 99px; font: 10px var(--mono); }
+    .ui-body { padding: 20px; }
+    .mock-stat-grid { display: grid; grid-template-columns: 1.3fr repeat(3,.7fr); gap: 10px; }
+    .mock-stat { border: 1px solid #303b38; background: #17201e; border-radius: 12px; padding: 14px; min-height: 94px; }
+    .mock-stat small { display: block; color: #8e9d98; margin-bottom: 8px; }
+    .mock-stat b { display: block; font-size: 24px; }
+    .mock-stat.hero { background: #16362e; border-color: #29624f; }
+    .mock-stat.hero b { color: #8fd5b9; }
+    .mock-table { margin-top: 12px; border: 1px solid #303b38; border-radius: 12px; overflow: hidden; }
+    .mock-row { display: grid; grid-template-columns: 1.3fr repeat(5,.65fr); }
+    .mock-row > span { padding: 10px 12px; border-bottom: 1px solid #303b38; font-size: 12px; }
+    .mock-row.header { color: #82908b; background: #17201e; font: 10px var(--mono); text-transform: uppercase; }
+    .mock-row:last-child > span { border-bottom: 0; }
+    .delta-up { color: #82d0af; } .delta-down { color: #ef9e85; }
+    .pair-card { margin-top: 12px; border: 1px solid #303b38; border-radius: 13px; background: #151e1c; overflow: hidden; }
+    .pair-head { padding: 12px 14px; border-bottom: 1px solid #303b38; display: flex; gap: 9px; align-items: center; color: #b7c2be; }
+    .pair-head code { color: #7fc7ba; }
+    .pair-cols { display: grid; grid-template-columns: 1fr 1fr; }
+    .answer { padding: 15px; min-height: 180px; border-right: 1px solid #303b38; }
+    .answer:last-child { border-right: 0; }
+    .answer h4 { margin: 0 0 9px; }
+    .answer p { color: #b0bcb8; font-size: 12px; }
+    .answer .evidence { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; margin-top: 13px; }
+    .answer .evidence span { background: #202b28; border-radius: 6px; padding: 7px; font: 10px var(--mono); color: #8ea09a; }
+    .tabbar { display: flex; gap: 4px; border-bottom: 1px solid #303b38; padding: 8px 12px 0; }
+    .tab { border: 0; background: transparent; color: #8e9d98; padding: 8px 10px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .tab.active { color: white; border-bottom-color: #71c4ad; }
+    .tab-panel { padding: 14px; color: #b0bcb8; font-size: 12px; min-height: 68px; }
+    .labelbar { display: flex; gap: 8px; align-items: center; padding: 12px 14px; background: #18221f; border-top: 1px solid #303b38; }
+    .choice, .reveal { border: 1px solid #42514c; color: #dce6e2; background: #202b28; padding: 7px 10px; border-radius: 7px; cursor: pointer; }
+    .choice.selected { background: #28634f; border-color: #459678; }
+    .reveal { margin-left: auto; color: #9bada7; }
+    .model-name { display: none; font: 10px var(--mono); color: #edb17f; }
+    .ui.revealed .model-name { display: inline; }
+    .score-layers { display: grid; gap: 11px; }
+    .score-layer { display: grid; grid-template-columns: 145px minmax(0,1fr); gap: 15px; align-items: start; border: 1px solid var(--line); background: var(--panel); border-radius: 13px; padding: 16px; }
+    .score-layer > b { font: 700 12px var(--mono); color: var(--orange); }
+    .score-layer p { margin: 0; color: var(--muted); font-size: 13px; }
+    .dag { display: grid; grid-template-columns: 150px 1fr 170px; gap: 14px; align-items: center; }
+    .dag-node { border: 1px solid var(--line); background: var(--panel-solid); padding: 14px; border-radius: 12px; text-align: center; }
+    .parallel { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; padding: 18px; border: 1px dashed var(--orange); border-radius: 14px; position: relative; }
+    .parallel:before { content: "parallel"; position: absolute; left: 12px; top: -9px; background: var(--paper); padding: 0 6px; color: var(--orange); font: 10px var(--mono); }
+    .arrow { text-align: center; color: var(--orange); font: 800 22px var(--mono); }
+    .runner-table { border: 1px solid var(--line); border-radius: 15px; overflow: hidden; }
+    .runner-row { display: grid; grid-template-columns: 1fr .7fr 1.2fr 1.35fr .9fr; border-bottom: 1px solid var(--line); }
+    .runner-row:last-child { border-bottom: 0; }
+    .runner-row > div { padding: 13px; border-right: 1px solid var(--line); font-size: 12px; }
+    .runner-row > div:last-child { border-right: 0; }
+    .runner-row.head { background: var(--ink); color: white; font: 700 10px var(--mono); text-transform: uppercase; }
+    .roadmap { display: grid; gap: 13px; position: relative; }
+    .roadmap:before { content: ""; position: absolute; left: 21px; top: 25px; bottom: 25px; border-left: 2px solid var(--line); }
+    .phase { display: grid; grid-template-columns: 44px 130px minmax(0,1fr); gap: 14px; align-items: start; position: relative; }
+    .phase-num { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: var(--ink); color: white; font: 700 13px var(--mono); z-index: 1; }
+    .phase-name { padding-top: 10px; font-weight: 750; }
+    .phase-body { border: 1px solid var(--line); background: var(--panel); border-radius: 13px; padding: 15px 17px; }
+    .phase-body p { margin: 0; color: var(--muted); font-size: 13px; }
+    .decision-strip { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-top: 19px; }
+    .decision { border: 1px solid #31524a; background: #172520; color: white; border-radius: 11px; padding: 14px; }
+    .decision small { color: #91a39d; display: block; margin-bottom: 6px; }
+    .source-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+    .source { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 12px 14px; font-size: 12px; }
+    .source code { display: block; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+    .footnote { color: var(--muted); font-size: 11px; margin-top: 18px; }
+    @media (max-width: 1050px) {
+      .shell { grid-template-columns: minmax(0, 1fr); }
+      .rail { position: relative; min-width: 0; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 18px 24px; }
+      .rail .meta, .rail .guard { display: none; }
+      .rail nav { display: flex; overflow-x: auto; margin-top: 12px; }
+      main { padding-top: 35px; }
+      .fit-row { grid-template-columns: 50px 1fr 90px; }
+      .fit-row > div:nth-child(4), .fit-row > div:nth-child(5) { grid-column: span 3; border-top: 1px dashed var(--line); }
+      .fit-row.header > div:nth-child(4), .fit-row.header > div:nth-child(5) { display: none; }
+      .grid-4 { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .runner-row { grid-template-columns: 1fr 1fr; }
+      .runner-row > div { border-bottom: 1px solid var(--line); }
+      .runner-row.head { display: none; }
+    }
+    @media (max-width: 720px) {
+      main { padding-left: 16px; padding-right: 16px; }
+      .rail nav { flex-wrap: wrap; overflow-x: visible; }
+      .verdict, .grid-2, .grid-3, .grid-4, .arms, .pair-cols, .source-list { grid-template-columns: 1fr; }
+      .section-head { display: block; }
+      .flow { flex-direction: column; overflow-x: visible; gap: 14px; }
+      .node { flex: 1 1 auto; min-height: 0; }
+      .node:after { content: "↓"; top: auto; right: auto; bottom: -23px; left: calc(50% - 7px); }
+      .node:last-child:after { content: none; }
+      .arms:before, .arm:before, .seed:after { display: none; }
+      .fit-row { display: block; }
+      .fit-row.header { display: none; }
+      .fit-row > div { border-right: 0; border-bottom: 1px dashed var(--line); }
+      .fit-row > div:last-child { border-bottom: 0; }
+      .mock-stat-grid { grid-template-columns: 1fr 1fr; }
+      .mock-row { grid-template-columns: 1.4fr .8fr .8fr; }
+      .mock-row span:nth-child(4), .mock-row span:nth-child(5), .mock-row span:nth-child(6) { display: none; }
+      .ui-top, .tabbar, .labelbar { flex-wrap: wrap; }
+      .reveal { margin-left: 0; }
+      .answer { border-right: 0; border-bottom: 1px solid #303b38; }
+      .dag { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .score-layer { grid-template-columns: 1fr; gap: 6px; }
+      .phase { grid-template-columns: 44px 1fr; }
+      .phase-name { grid-column: 2; }
+      .phase-body { grid-column: 2; }
+      .decision-strip { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><span class="mark"></span><span>evalmine / field notes</span></div>
+    <div class="meta">
+      <div class="eyebrow">Living design artifact</div>
+      25 Aug 2026<br>
+      Repository: <code>evalmine</code><br>
+      Scope: audit + redesign + full v2 implementation
+    </div>
+    <nav aria-label="Report sections">
+      <a href="#verdict">01 / Verdict</a>
+      <a href="#today">02 / What exists</a>
+      <a href="#fit">03 / Use-case fit</a>
+      <a href="#isolation">04 / Experimental control</a>
+      <a href="#design">05 / v2 architecture</a>
+      <a href="#mockup">06 / Report mockup</a>
+      <a href="#backoff">07 / Music back-off</a>
+      <a href="#subscriptions">08 / Subscriptions</a>
+      <a href="#implementation">09 / Implementation</a>
+      <a href="#roadmap">10 / Build order</a>
+    </nav>
+    <div class="guard">No provider calls during implementation</div>
+  </aside>
+
+  <main>
+    <section id="verdict">
+      <span class="hero-badge"><i></i> V2 IMPLEMENTATION COMPLETE · PROVIDER CALLS 0</span>
+      <div class="eyebrow" style="margin-top:26px">Repository audit · product reframe · interface concepts</div>
+      <h1>Keep the evidence engine.<br>Rebuild the laboratory.</h1>
+      <p class="lede">evalmine is a careful, credible evaluator for stateless API answers. Your real need is a controlled experiment system for whole agents working inside isolated versions of your environment—sometimes for one response, sometimes across a long conversation, and sometimes as a domain pipeline.</p>
+      <div class="verdict">
+        <article class="verdict-main">
+          <div class="eyebrow">Recommendation</div>
+          <h2>Do not throw away v1. Do not extend its current core in place.</h2>
+          <p>Preserve the judge calibration, blinded human review, raw artifacts, cost discipline, HTML reporting, and decision log. Introduce a v2 experiment model whose unit is an <strong>arm running an episode in a workspace</strong>, not a model answering a prompt. Keep the old prompt runner as one runner type.</p>
+        </article>
+        <div class="verdict-side">
+          <div class="stat"><b>6 / 6</b><span>use cases are reachable with the v2 architecture</span></div>
+          <div class="stat"><b>2 / 6</b><span>are meaningfully served by the current execution model</span></div>
+          <div class="stat"><b>3</b><span>subscription-backed CLI runner mappings now implemented</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="today">
+      <div class="section-head">
+        <div><div class="eyebrow">02 / Original system</div><h2>What v1 did at the time of the audit</h2></div>
+        <p>This is the historical baseline that motivated v2. The repository now also includes the complete experiment spine, subscription runners, validators, blind labeling, calibrated episode judging, decision HTML, workflow DAG, and MCP control plane shown below.</p>
+      </div>
+      <h3>One run today</h3>
+      <div class="flow" aria-label="Current evalmine flow">
+        <div class="node"><b>Suite YAML</b><small>prompt templates, cases, schemas, one rubric, labels</small></div>
+        <div class="node hot"><b>Direct API calls</b><small>Anthropic, OpenAI, Google; API keys only</small></div>
+        <div class="node"><b>Answer records</b><small>text, tokens, latency, schema and code-block check</small></div>
+        <div class="node good"><b>Pairwise judge</b><small>blind, two presentation orders, calibrated to you</small></div>
+        <div class="node good"><b>Evidence pack</b><small>JSON, JSONL, Markdown, self-contained HTML</small></div>
+      </div>
+      <div class="callout"><strong>The important boundary:</strong> the adapter protocol is <code>complete(Request) → Response</code>. There is no workspace, tool loop, repository diff, session, follow-up turn, plugin set, agent instruction discovery, task DAG, or environment snapshot in the data model.</div>
+
+      <div class="grid-2" style="margin-top:20px">
+        <article class="card">
+          <div class="split-title"><span class="dot" style="background:var(--green)"></span><h3 style="margin:0">Keep nearly intact</h3></div>
+          <ul class="clean">
+            <li>Position-swapped, model-blind pairwise judging</li>
+            <li>Cohen’s kappa gate against your labels</li>
+            <li>Raw answer/pair artifacts and reproducible reports</li>
+            <li>Self-contained HTML with blind A/B labeling</li>
+            <li>Cost caps, unknown-price failure, dated prices</li>
+            <li>Decision log separated from measurement</li>
+          </ul>
+        </article>
+        <article class="card">
+          <div class="split-title"><span class="dot" style="background:var(--orange)"></span><h3 style="margin:0">Replace or generalize</h3></div>
+          <ul class="clean replace">
+            <li><code>model</code> becomes an arm with runner + model + config</li>
+            <li><code>task/case</code> becomes an episode with turns + validators</li>
+            <li>API adapter becomes a runner protocol for CLIs and pipelines</li>
+            <li>Answer cache becomes immutable run artifacts + explicit replay</li>
+            <li>Code-block checks become validators against the workspace</li>
+            <li>Serial nested loops become a dependency-aware scheduler</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="fit">
+      <div class="section-head">
+        <div><div class="eyebrow">03 / Fit assessment</div><h2>Your six use cases, tested against the code</h2></div>
+        <p>The percentages are directional product-fit signals, not test scores. “Partial” means useful machinery exists, but it would answer a narrower question than the one you care about.</p>
+      </div>
+      <div class="fit-table">
+        <div class="fit-row header"><div>#</div><div>Use case</div><div>Today</div><div>Why</div><div>v2 move</div></div>
+        <div class="fit-row">
+          <div class="num">01</div>
+          <div><strong>Opus 5 vs 4.8 vs 4.6 on daily work</strong><div class="bar"><i style="width:30%"></i></div></div>
+          <div><span class="tag partial">Partial</span></div>
+          <div><p>It can compare direct API answers from models listed in the price table. It cannot let Claude Code inspect and change an isolated repo, use tools, or carry matched follow-ups. The current table has Opus 5, not the other two examples.</p></div>
+          <div><p>Add a Claude Code runner and episode workspaces. Repeat the same task protocol in independent timelines.</p></div>
+        </div>
+        <div class="fit-row">
+          <div class="num">02</div>
+          <div><strong>CLAUDE.md and plugin ablations</strong><div class="bar"><i style="width:8%; background:var(--red)"></i></div></div>
+          <div><span class="tag no">No</span></div>
+          <div><p>A suite-level <code>system</code> string is not Claude Code’s instruction/plugin environment. The direct Messages API never discovers CLAUDE.md, loads plugins, runs hooks, or exposes the product’s tool behavior.</p></div>
+          <div><p>Make configuration a first-class arm variable: current, candidate, no instructions, plugin A, plugin A+B.</p></div>
+        </div>
+        <div class="fit-row">
+          <div class="num">03</div>
+          <div><strong>OpenAI vs Anthropic vs Google</strong><div class="bar"><i style="width:45%"></i></div></div>
+          <div><span class="tag partial">Partial</span></div>
+          <div><p>Three API adapters exist and can share prompt cases. But coding-agent comparisons are product-stack comparisons: Codex, Claude Code, and Gemini CLI bring different tools, prompts, memory, context management, and permissions.</p></div>
+          <div><p>Add CLI runners and label the causal claim honestly: “agent product in my environment,” not “bare model.”</p></div>
+        </div>
+        <div class="fit-row">
+          <div class="num">04</div>
+          <div><strong>Music-analytics LLM back-off</strong><div class="bar"><i style="width:35%"></i></div></div>
+          <div><span class="tag partial">Partial</span></div>
+          <div><p>The judging, human labels, costs, schemas, and reports transfer. Missing are frozen database fixtures, T1→T2/T3 dependencies, batch enrichment, controlled write-back, concurrent arms, domain scorers, real-app inspection, and raw ledgers.</p></div>
+          <div><p>Add a pipeline runner/DAG and let the music repo supply its domain executor and validators.</p></div>
+        </div>
+        <div class="fit-row">
+          <div class="num">05</div>
+          <div><strong>Evaluate in your real environment</strong><div class="bar"><i style="width:50%"></i></div></div>
+          <div><span class="tag partial">Partial</span></div>
+          <div><p>The thesis is exactly right—your tasks, not leaderboards. The current cases still reduce the environment to rendered strings, so they miss accumulated code state, interaction burden, visual quality, and follow-up behavior.</p></div>
+          <div><p>Promote “episode + workspace + trajectory + artifacts” to the primary evaluation unit.</p></div>
+        </div>
+        <div class="fit-row">
+          <div class="num">06</div>
+          <div><strong>Subscriptions, agent invocation, HTML reports</strong><div class="bar"><i style="width:78%"></i></div></div>
+          <div><span class="tag partial">Partial</span></div>
+          <div><p>HTML and MCP are already real. The MCP tool still calls the API core, so it needs provider keys and evaluates prompt responses—not a subscription-authenticated agent session.</p></div>
+          <div><p>Keep CLI-first core + MCP wrapper; add subscription-backed local CLI runners and an API fallback lane.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="isolation">
+      <div class="section-head">
+        <div><div class="eyebrow">04 / Experimental control</div><h2>The experiment is invalid if the timelines touch</h2></div>
+        <p>Your bias concern has two separate sources: repository state contamination and agent/session contamination. Both need explicit isolation.</p>
+      </div>
+      <div class="isolation">
+        <div class="seed"><strong>Frozen seed capsule</strong><br><small>commit + dirty patch + allowed untracked inputs + dependency lock + environment policy</small></div>
+        <div class="arms">
+          <div class="arm">
+            <span class="tag new">Arm A</span><h3>Opus 5 · current setup</h3>
+            <div class="stack"><span>workspace / A</span><span>session store / A</span><span>config bundle / current</span><span>artifacts / A / episode-01</span></div>
+          </div>
+          <div class="arm">
+            <span class="tag new">Arm B</span><h3>Opus 4.8 · current setup</h3>
+            <div class="stack"><span>workspace / B</span><span>session store / B</span><span>config bundle / current</span><span>artifacts / B / episode-01</span></div>
+          </div>
+          <div class="arm">
+            <span class="tag new">Arm C</span><h3>Opus 5 · no custom setup</h3>
+            <div class="stack"><span>workspace / C</span><span>session store / C</span><span>safe-mode config / none</span><span>artifacts / C / episode-01</span></div>
+          </div>
+        </div>
+        <div class="isolation-foot">
+          <span class="chip">no shared conversation IDs</span><span class="chip">no shared writable repo</span><span class="chip">no treatment leakage</span><span class="chip">same scripted turns</span><span class="chip">randomized or blocked schedule</span><span class="chip">archive then discard</span>
+        </div>
+      </div>
+      <div class="grid-3" style="margin-top:16px">
+        <article class="card"><span class="tag no">Failure mode</span><h3 style="margin-top:10px">A worktree alone is not the control</h3><p class="sublede">It separates checked-out files, but agent home configuration, session history, global memory, hooks, caches, and external services may still be shared. The run manifest must say which are isolated, shared read-only, or deliberately uncontrolled.</p></article>
+        <article class="card"><span class="tag partial">Follow-ups</span><h3 style="margin-top:10px">Mirror the protocol, not accidental wording</h3><p class="sublede">For fair multi-turn tests, pre-script common follow-ups or define conditional follow-up rules from deterministic workspace probes. Human-steered arms should remain blind and record why a follow-up diverged.</p></article>
+        <article class="card"><span class="tag yes">Long horizon</span><h3 style="margin-top:10px">Parallel timelines are allowed to diverge</h3><p class="sublede">A “respectable body of work” becomes a longitudinal cohort. Each arm receives the same sequence of task intents, keeps its own prior changes, and is evaluated on compounding quality—not forced back into identical state after every task.</p></article>
+      </div>
+    </section>
+
+    <section id="design">
+      <div class="section-head">
+        <div><div class="eyebrow">05 / v2 product model</div><h2>Four experiment types, one evidence envelope</h2></div>
+        <p>Separating experiment types prevents the report from making stronger claims than the design supports.</p>
+      </div>
+      <div class="grid-4">
+        <article class="card lane"><span class="tag new">Model swap</span><h3 style="margin-top:11px">Same agent product, same config</h3><p>Example: Claude Code with Opus 5 vs 4.8 vs 4.6.</p><div class="claim"><strong>Claim allowed:</strong> model choice changed the observed result inside this product harness.</div></article>
+        <article class="card lane"><span class="tag new">Config ablation</span><h3 style="margin-top:11px">Same model, instructions/plugins vary</h3><p>Example: current CLAUDE.md vs candidate vs none; plugin on/off.</p><div class="claim"><strong>Claim allowed:</strong> this configuration helped or hurt this workload.</div></article>
+        <article class="card lane"><span class="tag new">Agent product</span><h3 style="margin-top:11px">Claude Code vs Codex vs Gemini CLI</h3><p>Each product keeps its native harness and subscription.</p><div class="claim"><strong>Claim allowed:</strong> the whole agent stack worked better for you—not the bare model.</div></article>
+        <article class="card lane"><span class="tag new">Pipeline</span><h3 style="margin-top:11px">Domain runner + model matrix</h3><p>Example: enrichment batches, tool loops, judge, labeling, and decision.</p><div class="claim"><strong>Claim allowed:</strong> the tested stack produced the better end-to-end product outcome.</div></article>
+      </div>
+
+      <h3 style="margin-top:28px">Proposed experiment manifest</h3>
+      <div class="manifest" aria-label="Illustrative YAML manifest">
+        <div class="manifest-head"><i></i><i></i><i></i><span style="margin-left:8px">experiments/opus-working-style.yaml · illustrative</span></div>
+        <pre><span class="k">experiment:</span> <span class="s">opus-working-style</span>
+<span class="k">version:</span> <span class="s">2</span>
+<span class="k">question:</span> <span class="s">Which Claude model is least frustrating on my everyday repo work?</span>
+
+<span class="k">seed:</span>
+  <span class="k">repo:</span> <span class="s">../evalmine</span>
+  <span class="k">ref:</span> <span class="s">f85cb59</span>
+  <span class="k">dirty:</span> <span class="s">capture</span>            <span class="c"># exact patch, never the live directory</span>
+  <span class="k">untracked:</span> <span class="s">allowlisted</span>
+  <span class="k">untracked_allowlist:</span> [<span class="s">docs/**</span>]
+
+<span class="k">isolation:</span>
+  <span class="k">workspace:</span> <span class="s">copy</span>           <span class="c"># one disposable directory per arm × repeat</span>
+  <span class="k">session:</span> <span class="s">fresh-per-run</span>
+  <span class="k">external_writes:</span> <span class="s">deny</span>
+
+<span class="k">arms:</span>
+  - <span class="k">id:</span> <span class="s">opus-5-current</span>
+    <span class="k">runner:</span> <span class="s">claude-code</span>
+    <span class="k">model:</span> <span class="s">claude-opus-5</span>
+    <span class="k">auth:</span> <span class="s">subscription</span>
+    <span class="k">configuration:</span> { <span class="k">instructions:</span> <span class="s">inherit</span>, <span class="k">plugins:</span> <span class="s">inherit</span> }
+  - <span class="k">id:</span> <span class="s">opus-4-8-current</span>
+    <span class="k">runner:</span> <span class="s">claude-code</span>
+    <span class="k">model:</span> <span class="s">claude-opus-4-8</span>
+    <span class="k">auth:</span> <span class="s">subscription</span>
+    <span class="k">configuration:</span> { <span class="k">instructions:</span> <span class="s">inherit</span>, <span class="k">plugins:</span> <span class="s">inherit</span> }
+  - <span class="k">id:</span> <span class="s">opus-5-none</span>
+    <span class="k">runner:</span> <span class="s">claude-code</span>
+    <span class="k">model:</span> <span class="s">claude-opus-5</span>
+    <span class="k">auth:</span> <span class="s">subscription</span>
+    <span class="k">configuration:</span> { <span class="k">instructions:</span> <span class="s">none</span>, <span class="k">plugins:</span> <span class="s">none</span> }
+
+<span class="k">validators:</span>
+  <span class="k">repo-unchanged:</span> { <span class="k">type:</span> <span class="s">repository-diff</span>, <span class="k">expect:</span> <span class="s">unchanged</span> }
+  <span class="k">required-sections:</span>
+    <span class="k">type:</span> <span class="s">required-sections</span>
+    <span class="k">target:</span> <span class="s">final-response</span>
+    <span class="k">sections:</span> [<span class="s">recommendation</span>, <span class="s">largest risk</span>]
+
+<span class="k">episodes:</span>
+  - <span class="k">id:</span> <span class="s">redesign-evalmine</span>
+    <span class="k">turns:</span>
+      - <span class="k">prompt_file:</span> <span class="s">prompts/redesign.md</span>
+      - <span class="k">prompt:</span> <span class="s">Challenge the recommendation.</span>
+      - <span class="k">prompt:</span> <span class="s">Produce the smallest implementation plan.</span>
+    <span class="k">validators:</span> [<span class="s">repo-unchanged</span>, <span class="s">required-sections</span>]
+    <span class="k">repeats:</span> <span class="s">3</span>
+
+<span class="k">evaluation:</span>
+  <span class="k">objectives:</span> [<span class="s">correctness</span>, <span class="s">judgment</span>, <span class="s">friction</span>, <span class="s">ship readiness</span>]
+  <span class="k">human:</span> { <span class="k">required:</span> <span class="s">true</span>, <span class="k">labels_per_pair:</span> <span class="s">1</span> }
+  <span class="k">judge:</span> { <span class="k">enabled:</span> <span class="s">true</span>, <span class="k">pairwise:</span> <span class="s">true</span>, <span class="k">position_swap:</span> <span class="s">true</span>, <span class="k">calibrate:</span> <span class="s">true</span> }
+  <span class="k">blind:</span> <span class="s">arm-identity</span></pre>
+      </div>
+
+      <h3 style="margin-top:28px">The new run path</h3>
+      <div class="flow">
+        <div class="node"><b>Experiment compiler</b><small>validates arms, episodes, controls, budget policy</small></div>
+        <div class="node hot"><b>Seed materializer</b><small>builds disposable workspaces and config capsules</small></div>
+        <div class="node hot"><b>Runner protocol</b><small>Claude, Codex, Gemini, API, or domain pipeline</small></div>
+        <div class="node"><b>Artifact envelope</b><small>events, transcript, diff, tests, screenshots, cost/usage</small></div>
+        <div class="node good"><b>Evaluators</b><small>validators + human + calibrated judges</small></div>
+        <div class="node good"><b>Decision report</b><small>result, uncertainty, caveats, raw evidence</small></div>
+      </div>
+
+      <div class="score-layers" style="margin-top:20px">
+        <div class="score-layer"><b>1 / OUTCOME</b><p>Tests, schema, visual checks, forbidden-file changes, task-specific assertions, final repository state. Objective evidence wins over prose.</p></div>
+        <div class="score-layer"><b>2 / INTERACTION</b><p>Turns to acceptance, user corrections, rework, approvals, unnecessary changes, tool failures, wall time, compactions. This is where “frustrating to work with” becomes measurable.</p></div>
+        <div class="score-layer"><b>3 / HUMAN</b><p>Blind pairwise preference plus dimension scores for correctness, judgment, collaboration, restraint, and ship-readiness. Notes remain first-class.</p></div>
+        <div class="score-layer"><b>4 / JUDGE</b><p>Pairwise, position-swapped judgment over the outcome bundle—not only the final message. Calibrate to your labels and surface cross-judge disagreement for human review.</p></div>
+      </div>
+    </section>
+
+    <section id="mockup">
+      <div class="section-head">
+        <div><div class="eyebrow">06 / Interface direction</div><h2>The implemented report shows work, not just answers</h2></div>
+        <p>This interactive mock uses invented placeholder values to demonstrate hierarchy. It is not an eval result.</p>
+      </div>
+      <div class="ui" id="reportMock">
+        <div class="ui-top"><b>opus-working-style</b><span class="crumb">run 2026-08-25 / 9 episode instances</span><span class="ui-pill">ILLUSTRATIVE DATA</span></div>
+        <div class="ui-body">
+          <div class="mock-stat-grid">
+            <div class="mock-stat hero"><small>Decision signal</small><b>Human review needed</b><span style="font-size:11px;color:#9fb2ab">2 arms are close; friction differs more than correctness</span></div>
+            <div class="mock-stat"><small>Outcome pass</small><b>8 / 9</b></div>
+            <div class="mock-stat"><small>Judge calibration</small><b>κ .67</b></div>
+            <div class="mock-stat"><small>Labeled</small><b>4 / 9</b></div>
+          </div>
+          <div class="mock-table">
+            <div class="mock-row header"><span>Arm</span><span>Outcome</span><span>Human</span><span>Turns</span><span>Corrections</span><span>Wall time</span></div>
+            <div class="mock-row"><span>Hidden arm 01</span><span class="delta-up">3 / 3</span><span>2 wins</span><span>6.0</span><span class="delta-down">3</span><span>31m</span></div>
+            <div class="mock-row"><span>Hidden arm 02</span><span class="delta-up">3 / 3</span><span>2 wins</span><span class="delta-up">4.3</span><span class="delta-up">1</span><span>24m</span></div>
+            <div class="mock-row"><span>Hidden arm 03</span><span class="delta-down">2 / 3</span><span>0 wins</span><span>5.7</span><span>2</span><span>28m</span></div>
+          </div>
+
+          <div class="pair-card">
+            <div class="pair-head"><code>redesign-evalmine / repeat-02</code><span class="ui-pill">blind pair</span><span class="model-name">A = Opus 4.8 · B = Opus 5</span></div>
+            <div class="pair-cols">
+              <article class="answer"><h4>Outcome A</h4><p>Produces an architecture memo, a v2 manifest, and a report mock. Preserves the scoring kernel and replaces execution. One follow-up correction requested around session isolation.</p><div class="evidence"><span>repo clean ✓</span><span>sections 8/8</span><span>1 correction</span></div></article>
+              <article class="answer"><h4>Outcome B</h4><p>Produces a detailed extension plan around the current suite. Strong scoring discussion, but initially overlooks CLI-authenticated agents and treats CLAUDE.md as a system prompt.</p><div class="evidence"><span>repo clean ✓</span><span>sections 7/8</span><span>3 corrections</span></div></article>
+            </div>
+            <div class="tabbar" role="tablist">
+              <button class="tab active" data-panel="outcome">Outcome</button>
+              <button class="tab" data-panel="diff">Workspace diff</button>
+              <button class="tab" data-panel="transcript">Transcript</button>
+              <button class="tab" data-panel="evidence">Evidence</button>
+            </div>
+            <div class="tab-panel" id="mockPanel">Both arms respected the planning-only constraint. A identified the unit-of-analysis mismatch in turn one; B reached it after the second follow-up.</div>
+            <div class="labelbar"><button class="choice">Prefer A</button><button class="choice">Tie</button><button class="choice">Prefer B</button><button class="reveal" id="revealMock">Reveal arms</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="callout"><strong>Report design principle:</strong> the top summary answers “what happened?”; the arm table answers “at what interaction cost?”; the pair review exposes the final workspace, diff, transcript, and validator evidence. Model identity stays hidden until the reviewer explicitly reveals it, and label export records whether reveal occurred.</div>
+    </section>
+
+    <section id="backoff">
+      <div class="section-head">
+        <div><div class="eyebrow">07 / Domain workflow</div><h2>The music back-off is a pipeline experiment, not a prompt suite</h2></div>
+        <p>The earlier workflow succeeded because it froze inputs, respected task dependencies, kept raw captures, combined objective and subjective scoring, and waited for your decision.</p>
+      </div>
+      <div class="dag" aria-label="Music analytics pipeline DAG">
+        <div class="dag-node"><span class="tag new">Frozen input</span><h3 style="margin:9px 0 0">Clean DB / fixture</h3></div>
+        <div><div class="arrow">→</div><div class="parallel"><div class="dag-node"><strong>T1 seed</strong><br><small>write controlled state</small></div><div class="dag-node"><strong>Model arms</strong><br><small>batch + retries + ledger</small></div><div class="dag-node"><strong>T2 deep</strong></div><div class="dag-node"><strong>T3 expanded</strong></div></div><div class="arrow">→</div></div>
+        <div class="dag-node"><span class="tag yes">Evaluate</span><h3 style="margin:9px 0 0">Scorers + app eye test + judge + human</h3></div>
+      </div>
+      <div class="grid-3" style="margin-top:18px">
+        <article class="card"><h3>Generic in evalmine</h3><p class="sublede">DAG scheduling, arm/repeat matrix, snapshots, concurrency limits, retries, raw event ledger, artifact IDs, budget policy, labeling, judge calibration, HTML.</p></article>
+        <article class="card"><h3>Owned by music analytics</h3><p class="sublede">Database restore, enrichment calls, T1/T2/T3 transforms, write-back rules, domain ground truth, precision/recall logic, app launch, screenshot views, business-specific quality rubrics.</p></article>
+        <article class="card"><h3>Why this boundary works</h3><p class="sublede">evalmine remains reusable and auditable; the product repo keeps the code that understands tracks, users, databases, caches, and app meaning. Raw artifacts cross the boundary through one versioned envelope.</p></article>
+      </div>
+      <div class="callout"><strong>Real evidence imported:</strong> the companion adapter pins the historical 100/250-track fixtures, 74-row ledger, analyzer scorecard, side-by-side sample packet, findings, and founder-facing report. Its disposable proof run checked all 74 raw-output references across eight models and captured seven tamper-verified artifacts—with no provider or database call.</div>
+    </section>
+
+    <section id="subscriptions">
+      <div class="section-head">
+        <div><div class="eyebrow">08 / Runner feasibility</div><h2>Subscription-first is practical—with honest accounting</h2></div>
+        <p>The local machine already has Claude Code and Codex. Google’s official Gemini CLI supports the same broad automation pattern but is not currently installed here.</p>
+      </div>
+      <div class="runner-table">
+        <div class="runner-row head"><div>Runner</div><div>Local status</div><div>Automation surface</div><div>Configuration controls</div><div>Cost treatment</div></div>
+        <div class="runner-row"><div><strong>Claude Code</strong><br><code>2.1.245</code></div><div><span class="tag yes">Installed</span></div><div>Print mode, JSON/stream JSON, resume/fork, explicit session ID</div><div>Safe mode, plugin directories, settings sources, tools, worktree support</div><div>Subscription usage; invoice-equivalent cost may be unavailable</div></div>
+        <div class="runner-row"><div><strong>Codex CLI</strong><br><code>0.149.1</code></div><div><span class="tag yes">Installed</span></div><div><code>codex exec</code>, JSONL events, resume/fork, output schema</div><div>Model/profile overrides, ignore user config, sandbox, ephemeral sessions</div><div>ChatGPT subscription or API; record auth mode</div></div>
+        <div class="runner-row"><div><strong>Gemini CLI</strong></div><div><span class="tag partial">Not installed</span></div><div>Official CLI documents non-interactive prompts, JSON/stream JSON, resume</div><div>Google account auth, project settings, sandbox and approval modes</div><div>Google AI plan/quota or API; record auth mode</div></div>
+        <div class="runner-row"><div><strong>Direct API</strong></div><div><span class="tag yes">v1 exists</span></div><div>Stateless and batch requests; structured outputs</div><div>Exact prompts, parameters, schemas, provider adapters</div><div>Token-level USD from dated price table</div></div>
+      </div>
+      <div class="grid-2" style="margin-top:16px">
+        <article class="card"><span class="tag yes">Recommended default</span><h3 style="margin-top:10px">Use subscriptions for agent-behavior experiments</h3><p class="sublede">That is the product experience you actually use. Record CLI version, auth mode, model string, effective config, event stream, quotas/errors, and wall time. Report monetary cost as unavailable or subscription-allocated—not $0.</p></article>
+        <article class="card"><span class="tag partial">Use API deliberately</span><h3 style="margin-top:10px">Use APIs for pipeline economics and strict model isolation</h3><p class="sublede">The music enrichment back-off needs batch throughput, exact token accounting, response schemas, and true marginal cost. API mode also remains the cleanest lane for narrow prompt/model comparisons.</p></article>
+      </div>
+      <p class="footnote">Provider authentication and automation features change. The implementation should capability-probe each installed CLI and persist the exact <code>--help</code>/version snapshot with every experiment instead of hard-coding assumptions.</p>
+    </section>
+
+    <section id="implementation">
+      <div class="section-head">
+        <div><div class="eyebrow">09 / Implementation status</div><h2>Agent work now ends in objective evidence</h2></div>
+        <p>Phases 1–5B, the workflow lane, and the v2 MCP control plane are implemented; all 393 network-free tests pass across fake provider runners, treated-baseline diffs, command gates, blind mapping, multi-annotator labels, position-swapped judging, calibration, DAG fan-out, frozen fixtures, artifacts, MCP refusals, and tamper detection. The real 74-row music evidence import also passes. No Claude, OpenAI, or Google model was called while building or verifying them.</p>
+      </div>
+      <div class="flow" aria-label="Implemented v2 execution lifecycle">
+        <div class="node good"><b>Validate + plan</b><small>strict manifest, pinned inputs, deterministic run matrix</small></div>
+        <div class="node good"><b>Prepare</b><small>fresh copy/worktree per run, instruction treatment, immutable envelope</small></div>
+        <div class="node good"><b>Preflight</b><small>verify baseline, version/help probes, capability and safety refusals</small></div>
+        <div class="node good"><b>Execute</b><small>explicit confirmation, concurrent runs, run-local multi-turn sessions</small></div>
+        <div class="node good"><b>Evidence</b><small>raw JSONL, normalized events, tools, timing, identity, final responses</small></div>
+        <div class="node good"><b>Check</b><small>treated-baseline diff, required outputs, tests/lint, immutable verdicts</small></div>
+        <div class="node good"><b>Report + label</b><small>stable blind pairs, trajectory panes, local resume, JSON export/import</small></div>
+        <div class="node good"><b>Judge + decide</b><small>position swap, kappa, uncertainty, disagreements, decision HTML</small></div>
+        <div class="node good"><b>Workflow + MCP</b><small>DAG artifacts and the same guarded operations from agent sessions</small></div>
+      </div>
+
+      <div class="grid-3" style="margin-top:18px">
+        <article class="card">
+          <span class="tag yes">Implemented</span>
+          <h3 style="margin-top:10px">Useful vertical slice</h3>
+          <ul class="clean">
+            <li>Claude Code, Codex CLI, and Gemini CLI command adapters</li>
+            <li>Fresh session per run; follow-ups resume only that session</li>
+            <li>Native workspace/external-write sandbox mappings and stripped secret env vars</li>
+            <li>Claude API ceilings and workspace-local plugin-directory additions</li>
+            <li>Subscription billing basis recorded without a misleading $0</li>
+            <li>Partial failures retained while independent arms continue</li>
+            <li>Preparation evidence remains verifiable after execution</li>
+          </ul>
+        </article>
+        <article class="card">
+          <span class="tag partial">Fails closed</span>
+          <h3 style="margin-top:10px">Not silently approximated</h3>
+          <ul class="clean replace">
+            <li>Session reuse across planned runs</li>
+            <li>Claude installed-plugin allowlists by name</li>
+            <li>Codex per-run plugin allowlists</li>
+            <li>Gemini execution until its CLI is installed and probed</li>
+            <li>Fresh music direct-API reruns until a pre-call USD cap and owner authorization exist</li>
+          </ul>
+        </article>
+        <article class="card">
+          <span class="tag yes">Phase 4 implemented</span>
+          <h3 style="margin-top:10px">Checks + workflow DAG</h3>
+          <ul class="clean">
+            <li>Diffs against each arm's treated pre-agent tree</li>
+            <li>Required regular files and literal response/file sections</li>
+            <li>Direct-argv test/lint commands behind a second gate</li>
+            <li>Built-ins freeze state before command side effects</li>
+            <li>Create-once evidence with independent tamper verification</li>
+            <li>Fan-out, dependencies, frozen fixtures, and eye-test artifacts</li>
+            <li>Secret-config exclusion plus the verified real round-two evidence importer</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="manifest" style="margin-top:18px">
+        <div class="manifest-head"><i></i><i></i><i></i><span>Complete decision workflow · installed console script or local venv path</span></div>
+        <pre><span class="c"># zero provider calls; inspect compatibility first</span>
+./.venv/bin/evalmine experiment preflight /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt;
+
+<span class="c"># this is the explicit provider/mutation boundary</span>
+./.venv/bin/evalmine experiment execute /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt; \
+  --allow-provider-calls --turn-timeout 1800
+
+<span class="c"># objective checks launch no provider runner; test/lint commands need their own gate</span>
+./.venv/bin/evalmine experiment check /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt;
+
+<span class="c"># self-contained blind review queue + resumable portable labels</span>
+./.venv/bin/evalmine experiment report /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt;
+
+<span class="c"># blind position-swapped judge, then import exported human labels</span>
+./.venv/bin/evalmine experiment judge /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt; --allow-provider-calls
+./.venv/bin/evalmine experiment decide /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt; --labels labels.json
+
+<span class="c"># generic fan-out enrichment/backoff lane</span>
+./.venv/bin/evalmine workflow run examples/music-backoff-workflow.yaml --out /tmp/workflows --allow-commands
+
+<span class="c"># import the real completed music round-two evidence; zero provider/database calls</span>
+./.venv/bin/evalmine workflow run examples/music-analytics-round2-import.yaml --out /tmp/workflows --allow-commands
+
+<span class="c"># verify every present lifecycle envelope</span>
+./.venv/bin/evalmine experiment verify /tmp/evalmine-runs/&lt;experiment&gt;/&lt;plan-id&gt;</pre>
+      </div>
+      <div class="callout"><strong>Why the command uses <code>./.venv/bin/evalmine</code>:</strong> an editable install creates the console script inside the virtual environment. A bare <code>evalmine</code> works only after activating that environment or installing the package on your shell’s PATH.</div>
+      <div class="grid-4" style="margin-top:18px">
+        <article class="card"><span class="tag yes">Diff</span><h3 style="margin-top:10px">Repository state</h3><p class="sublede">Added, modified, and deleted paths plus bounded redacted patches—even when the copy workspace has no <code>.git</code>.</p></article>
+        <article class="card"><span class="tag yes">Artifacts</span><h3 style="margin-top:10px">Required outputs</h3><p class="sublede">Regular-file presence, non-empty deliverables, and literal required sections in a file or the last response.</p></article>
+        <article class="card"><span class="tag partial">Explicit gate</span><h3 style="margin-top:10px">Tests + lint</h3><p class="sublede">Direct argument arrays, bounded redacted output, timeouts, exit verdicts, and named workspace side effects.</p></article>
+        <article class="card"><span class="tag yes">Tamper evident</span><h3 style="margin-top:10px">Independent envelope</h3><p class="sublede">Per-run results and a validation ledger are created once and hashed separately from execution.</p></article>
+      </div>
+      <div class="callout"><strong>Command-validator boundary:</strong> the no-provider-runner claim is exact, but an arbitrary manifest-declared test command can still have normal host filesystem and network authority. Evalmine therefore requires <code>--allow-validator-commands</code> and records command side effects; native command sandboxing remains future work.</div>
+      <div class="grid-3" style="margin-top:18px">
+        <article class="card"><span class="tag yes">Blind by default</span><h3 style="margin-top:10px">Stable A/B pairs</h3><p class="sublede">Every within-block arm pair appears once. Python bakes the visible-pane-to-run mapping; browser code only looks it up.</p></article>
+        <article class="card"><span class="tag yes">Decision evidence</span><h3 style="margin-top:10px">Trajectory, not prose alone</h3><p class="sublede">Final response, every turn, tool count, timing, diff, required outputs, and test/lint evidence sit side by side.</p></article>
+        <article class="card"><span class="tag yes">Portable human input</span><h3 style="margin-top:10px">Resume, export, import</h3><p class="sublede">Plan-scoped browser storage preserves drafts; JSON export/import carries choice, note, actual run, and reveal state.</p></article>
+      </div>
+      <div class="grid-3" style="margin-top:18px">
+        <article class="card"><span class="tag yes">Phase 5B</span><h3 style="margin-top:10px">Calibrated trajectory judge</h3><p class="sublede">Complete outcomes are judged twice with positions swapped. Human consensus, Cohen’s kappa, per-episode agreement, bootstrap intervals, and disagreements gate the headline.</p></article>
+        <article class="card"><span class="tag yes">Phase 4B</span><h3 style="margin-top:10px">Backoff DAG</h3><p class="sublede">Direct-argv fan-out and dependencies restore frozen fixtures, exclude local secrets, retain bounded logs, capture JSON/HTML/image artifacts, and import the real 74-row music evidence.</p></article>
+        <article class="card"><span class="tag yes">Agent-session ready</span><h3 style="margin-top:10px">MCP control plane</h3><p class="sublede">Plan, prepare, inspect, execute, check, report, judge, decide, and workflow operations share the CLI core. Every mutation/spend class has a client plus server gate.</p></article>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <div><div class="eyebrow">10 / Build order</div><h2>Every planned implementation slice is built</h2></div>
+        <p>The remaining work is operator validation: run real subscription arms, label the outcomes, install Gemini if desired, and decide how to put an enforceable pre-call USD ceiling around a fresh music direct-API run. The completed historical music workflow is already imported and verified.</p>
+      </div>
+      <div class="roadmap">
+        <div class="phase"><div class="phase-num">01</div><div class="phase-name">Experiment spine</div><div class="phase-body"><span class="tag yes">Done</span><h3>Define v2 without deleting v1</h3><p>Strict manifest, arm/episode types, input identity, deterministic scheduling, and zero-call validation/planning.</p></div></div>
+        <div class="phase"><div class="phase-num">02</div><div class="phase-name">Workspace substrate</div><div class="phase-body"><span class="tag yes">Done</span><h3>Disposable, independently verifiable workspaces</h3><p>Pinned seed capture, copy/worktree isolation, instruction treatments, immutable preparation evidence, baseline verification, and safe disposal.</p></div></div>
+        <div class="phase"><div class="phase-num">03</div><div class="phase-name">Runner boundary</div><div class="phase-body"><span class="tag yes">Phase 3A done</span><h3>Claude, Codex, and Gemini CLI execution</h3><p>Capability probes, explicit call confirmation, native sandbox mappings, multi-turn session continuity, concurrency, normalized evidence, and honest treatment refusals.</p></div></div>
+        <div class="phase"><div class="phase-num">04</div><div class="phase-name">Evidence depth</div><div class="phase-body"><span class="tag yes">Done</span><h3>Objective checks + domain workflows</h3><p>Treated-baseline validators, command gates, fan-out DAGs, frozen fixtures, captured eye-test artifacts, and final-workspace verification.</p></div></div>
+        <div class="phase"><div class="phase-num">05</div><div class="phase-name">Human decision</div><div class="phase-body"><span class="tag yes">Done</span><h3>Blind labels → calibrated decision</h3><p>Stable pairs, portable multi-rater labels, position-swapped trajectory judging, kappa, uncertainty, disagreements, arm rankings, and self-contained decision HTML.</p></div></div>
+        <div class="phase"><div class="phase-num">06</div><div class="phase-name">Pipeline lane</div><div class="phase-body"><span class="tag yes">Historical import done</span><h3>Music backoff shape and evidence proven</h3><p>The offline fixture proves execution semantics; the real adapter pins and verifies 74 historical arms, raw references, analyzer scores, findings, and the founder HTML. Only a newly spending API rerun remains operator work.</p></div></div>
+        <div class="phase"><div class="phase-num">07</div><div class="phase-name">Agent surface</div><div class="phase-body"><span class="tag yes">Done</span><h3>CLI-first core + guarded MCP</h3><p>V1 suites, v2 experiments, label/decision flow, and workflows are exposed with path containment, USD ceilings, structured refusals, and two-part mutation gates.</p></div></div>
+      </div>
+
+      <div class="verdict-main" style="margin-top:28px">
+        <div class="eyebrow">Recommended defaults</div>
+        <h2 style="font-size:32px">The four decisions I would lock before writing code</h2>
+        <div class="decision-strip">
+          <div class="decision"><small>Unit of evaluation</small><strong>Episode in a workspace</strong></div>
+          <div class="decision"><small>Execution strategy</small><strong>Subscription-first agents, API-first pipelines</strong></div>
+          <div class="decision"><small>Product surface</small><strong>CLI core + MCP + static HTML</strong></div>
+          <div class="decision"><small>Migration posture</small><strong>v2 spine; v1 preserved as a runner</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="section-head"><div><div class="eyebrow">Audit trail</div><h2>What this conclusion is grounded in</h2></div><p>Local code was primary. Official documentation was used only for current CLI/auth capabilities.</p></div>
+      <div class="source-list">
+        <div class="source"><strong>evalmine contract and tour</strong><code>README.md · docs/spec.md · docs/learning/how-it-works.md</code></div>
+        <div class="source"><strong>evalmine implementation</strong><code>experiment.py · workspace.py · runner.py · validators.py · experiment_report.py · decision.py · workflow.py · mcp_server.py · cli.py</code></div>
+        <div class="source"><strong>Music eval workflow</strong><code>music_analytics/docs/archive/LLM_EVAL_STRATEGY.md · docs/plans/llm-eval-round-2.md · eval/harness.ts · round-2 fixtures/ledger/findings/report · examples/music-analytics-round2-import.*</code></div>
+        <div class="source"><strong>OpenAI official documentation</strong><br><a href="https://learn.chatgpt.com/docs/auth">Authentication</a> · <a href="https://learn.chatgpt.com/docs/developer-commands?surface=cli">Codex developer commands</a> · <a href="https://learn.chatgpt.com/docs/agent-configuration/agents-md">AGENTS.md discovery</a></div>
+        <div class="source"><strong>Anthropic official documentation</strong><br><a href="https://code.claude.com/docs/en/cli-usage">Claude Code CLI reference</a> · <a href="https://code.claude.com/docs/en/sandboxing">Sandboxing</a> · <a href="https://code.claude.com/docs/en/settings">Settings</a></div>
+        <div class="source"><strong>Google official Gemini CLI repository</strong><br><a href="https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx">Authentication</a> · <a href="https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/cli-reference.md">CLI reference</a> · <a href="https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md">Sandboxing</a></div>
+      </div>
+      <p class="footnote">Originally prepared as a read-only planning artifact, then updated through Phases 1–5B and the real historical music-evidence import. Automated verification used fake runners, fixture commands, and frozen prior artifacts; no provider/model call was made during implementation.</p>
+    </section>
+  </main>
+</div>
+<script>
+  (function () {
+    const copy = {
+      outcome: 'Both arms respected the planning-only constraint. A identified the unit-of-analysis mismatch in turn one; B reached it after the second follow-up.',
+      diff: 'No repository changes. Planning artifacts were written outside the seed workspaces. A produced one report file; B produced a memo and a separate diagram.',
+      transcript: 'A: 4 assistant turns, 1 user correction. B: 6 assistant turns, 3 user corrections. Expandable turn-by-turn events would appear here.',
+      evidence: 'Validators: repo-unchanged ✓ · required sections: A 8/8, B 7/8 · citations resolved ✓ · isolation audit ✓.'
+    };
+    document.querySelectorAll('.tab').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
+        button.classList.add('active');
+        document.getElementById('mockPanel').textContent = copy[button.dataset.panel];
+      });
+    });
+    document.querySelectorAll('.choice').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.choice').forEach((b) => b.classList.remove('selected'));
+        button.classList.add('selected');
+      });
+    });
+    document.getElementById('revealMock').addEventListener('click', (event) => {
+      const mock = document.getElementById('reportMock');
+      mock.classList.toggle('revealed');
+      event.currentTarget.textContent = mock.classList.contains('revealed') ? 'Hide arms' : 'Reveal arms';
+    });
+  }());
+</script>
+</body>
+</html>

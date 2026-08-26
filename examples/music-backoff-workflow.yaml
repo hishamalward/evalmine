@@ -1,0 +1,30 @@
+workflow: music-backoff-offline-fixture
+version: 1
+root: ..
+max_parallel: 4
+
+fixtures:
+  - source: workflow-fixtures/catalog.json
+    target: workflow-input/catalog.json
+
+nodes:
+  - id: generate
+    argv: [python3, examples/workflow-fixture.py, generate, "{item}"]
+    fan_out: [agent-a, agent-b, agent-c]
+    artifacts: ["workflow-output/drafts/{item}.json"]
+
+  - id: enrich
+    needs: [generate]
+    argv: [python3, examples/workflow-fixture.py, enrich, "{item}"]
+    fan_out: [agent-a, agent-b, agent-c]
+    artifacts: ["workflow-output/enriched/{item}.json"]
+
+  - id: judge
+    needs: [enrich]
+    argv: [python3, examples/workflow-fixture.py, judge]
+    artifacts: [workflow-output/judge/scores.json]
+
+  - id: score
+    needs: [judge]
+    argv: [python3, examples/workflow-fixture.py, score]
+    artifacts: [workflow-output/decision.json, workflow-output/eye-test.html]

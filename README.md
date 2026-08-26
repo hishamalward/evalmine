@@ -39,12 +39,20 @@ Every frame of that is a real run. Re-record it with `vhs docs/demo.tape`
 
 **Status.** v0.1.0, pre-release. The core, the three provider adapters, execution
 checks and the MCP surface are built and tested; the price table is verified against
-each provider's public pricing page on its pinned date. No decision-log entry exists
-yet — see [Not yet](#not-yet).
+each provider's public pricing page on its pinned date. The version-2 experiment
+contract, dry-run planner, and isolated workspace/evidence substrate are implemented;
+the subscription runner boundary for Claude Code, Codex CLI, and Gemini CLI, objective
+validators, workflow DAG, blind episode report, portable human labeling, position-
+swapped episode judging, calibration, decision HTML, and v2 MCP control plane are
+implemented. Real subscription-backed dogfooding still requires an explicit operator
+run and human labels. No decision-log entry exists yet — see
+[Not yet](#not-yet).
 
 Specification: [docs/spec.md](docs/spec.md). It is the contract the code is written
 against and it wins over this README wherever the two disagree.
 How it works, in depth: [docs/learning/how-it-works.md](docs/learning/how-it-works.md) ([styled HTML rendering](docs/learning/how-it-works.html)).
+Agent-eval redesign: [visual planning report](docs/plans/evalmine-v2-planning-report.html)
+and [implementation plan](docs/plans/evalmine-v2-implementation-plan.md).
 
 ## Quickstart
 
@@ -55,6 +63,8 @@ pip install -e ".[dev]"          # add ,mcp -> ".[dev,mcp]" for the MCP server
 ```
 
 Python 3.10 or newer. Three runtime dependencies: PyYAML, jsonschema, httpx.
+The examples below use `evalmine` after activation. Without activation, call the same
+installed console script explicitly as `./.venv/bin/evalmine`.
 
 **Check a suite without spending anything.** `validate` parses the file, applies the
 JSON Schema, renders every prompt (an unmatched `{{placeholder}}` is a hard error),
@@ -95,6 +105,226 @@ and a report is reproducible; `--no-cache` forces fresh calls and still writes t
 
 Other commands: `evalmine prices [--for suite.yaml]`, `evalmine last suite.yaml`,
 `evalmine report <run-id>`, `evalmine compare <report_a> <report_b>`.
+
+## Agent experiment planning (v2 foundation)
+
+The v2 manifest describes an arm running a multi-turn episode in an isolated
+workspace. Arms independently declare their runner, model, subscription/API auth
+mode, instruction treatment, and plugin treatment. The planner expands all repeats
+and rotates arm order, but does not create workspaces, launch an agent, contact a
+provider, or spend anything.
+
+```bash
+evalmine experiment validate examples/agent-model-comparison.yaml
+evalmine experiment plan examples/agent-model-comparison.yaml
+evalmine experiment plan examples/agent-model-comparison.yaml --json
+```
+
+The shipped [model comparison](examples/agent-model-comparison.yaml) plans three Opus
+arms over a two-turn repository-redesign episode, repeated three times with fresh
+sessions: nine isolated runs. The companion
+[configuration ablation](examples/agent-config-ablation.yaml) holds the model fixed
+while comparing current, no-config, and candidate-config treatments. `configuration` can set
+`instructions` to `inherit`, `none`, or `files`, and `plugins` to `inherit`, `none`,
+or `allowlist`, so config ablations are first-class arms rather than manual machine
+changes. `validate` and `plan` always remain side-effect-free; `prepare` is the explicit
+boundary that materializes workspaces and evidence.
+
+### Prepare isolated workspaces
+
+Phase 2 materializes the dry-run plan without launching a model. Run it from a clean
+seed checkout, and put artifacts outside that repository:
+
+```bash
+./.venv/bin/evalmine experiment prepare examples/agent-model-comparison.yaml \
+  --out /tmp/evalmine-runs
+
+./.venv/bin/evalmine experiment verify \
+  /tmp/evalmine-runs/opus-working-style/<plan-id>
+
+./.venv/bin/evalmine experiment discard \
+  /tmp/evalmine-runs/opus-working-style/<plan-id> --yes
+```
+
+Preparation resolves the seed commit, enforces the tracked/untracked policy, and
+creates one independent copy or detached git worktree per planned run. It snapshots
+the exact manifest plus prompt/instruction inputs, records an environment inventory,
+applies each arm's project-instruction treatment, and writes immutable preparation
+evidence beside the mutable workspaces. Reusing an existing plan directory is refused.
+
+`verify` confirms every workspace is still contained and the source repository has
+not changed since preparation. `discard` requires an exact preparation marker and
+`--yes`; for worktree mode it removes git registrations before deleting the marked
+artifact directory. Preparation never launches a provider agent.
+
+### Preflight and execute agent episodes
+
+Preflight probes only the installed CLI version and documented flags. It re-verifies
+the prepared envelope, makes zero model calls, and writes nothing:
+
+```bash
+./.venv/bin/evalmine experiment preflight \
+  /tmp/evalmine-runs/opus-working-style/<plan-id>
+```
+
+Execution is a separate, explicit boundary:
+
+```bash
+./.venv/bin/evalmine experiment execute \
+  /tmp/evalmine-runs/opus-working-style/<plan-id> \
+  --allow-provider-calls --turn-timeout 1800
+```
+
+The runners use the authentication already owned by Claude Code, Codex CLI, or Gemini
+CLI, so subscription sessions can be used without copying credentials into evalmine.
+Every run gets its own workspace and fresh session; follow-up turns resume only inside
+that run. Raw JSONL, normalized events, tool activity, timing, requested/observed model,
+session identity, stderr, and final responses are written under `execution/`. A failed
+arm remains evidence while independent arms continue.
+
+Safety is fail-closed. Claude API-auth agent arms require `max_cost_usd` and receive
+the native `--max-budget-usd` ceiling. External-write allowlists require absolute
+`{run_key}` templates that resolve to fresh per-run directories, `--allow-external-writes`,
+native Claude/Codex sandbox mapping, and before/after fingerprints. Claude can add pinned workspace-local plugin directories to
+one arm with `plugins: directories`; exact installed-plugin allowlists by name and
+Codex per-run plugin allowlists remain refused. Claude no-config uses safe mode;
+Gemini has exact extension selection; Codex no-plugin arms ignore user config while
+retaining provider-owned authentication. Subscription usage is marked subscription,
+not reported as a misleading `$0`.
+
+### Check objective outcomes
+
+After execution, run the episode's declared repository diff, required-file, and
+required-section checks:
+
+```bash
+./.venv/bin/evalmine experiment check \
+  /tmp/evalmine-runs/opus-working-style/<plan-id>
+```
+
+Validator names are declared at the manifest top level and referenced by episodes.
+The two shipped agent examples require the planning episode to leave the repository
+unchanged and to cover named points in its final response. For implementation tasks,
+definitions can require changed paths or deliverables:
+
+```yaml
+validators:
+  changed-source:
+    type: repository-diff
+    expect: changed
+    include: ["src/**", "tests/**"]
+    max_changed_files: 20
+  tests:
+    type: command
+    argv: ["pytest", "-q"]
+    timeout_s: 600
+  deliverable:
+    type: required-files
+    paths: ["docs/findings.md"]
+  response-shape:
+    type: required-sections
+    target: final-response
+    sections: ["Recommendation", "Largest risk"]
+```
+
+The repository diff compares against an immutable treated pre-agent snapshot, so it
+works in copy workspaces without `.git` and does not mistake an instruction treatment
+for agent work. Execution anchors the final workspace tree; `check` refuses to
+attribute a later manual edit to the agent. Built-in checks freeze that state before commands run. Test/lint
+commands require a second acknowledgement because they are arbitrary local processes:
+
+```bash
+./.venv/bin/evalmine experiment check <prepared-dir> \
+  --allow-validator-commands
+```
+
+Command arguments are executed directly, not through an implicit shell; secret-shaped
+environment variables are removed and output is bounded and credential-redacted. The
+declared process may still have normal host filesystem and network authority. Check
+evidence is create-once under `validation/`, and `experiment verify` covers it alongside
+the preparation and execution envelopes.
+
+### Review and label in HTML
+
+Turn a completed execution—with objective checks when available—into a self-contained
+blind review queue:
+
+```bash
+./.venv/bin/evalmine experiment report \
+  /tmp/evalmine-runs/opus-working-style/<plan-id>
+```
+
+The command writes `<prepared-dir>/report/index.html`. It launches no provider runner
+or validator command. Runs are paired only within the same episode/repeat; all arm
+pairs are shown once, with stable randomized A/B placement. Identity, runner, model,
+and instruction/plugin treatment stay hidden until you choose **Reveal identities**.
+Execution status, trajectory, final response, repository patch, required-output
+checks, and test/lint evidence remain visible because those are the facts being judged.
+
+Choose A, B, tie, or unclear and add an optional note. Draft labels resume from browser
+local storage. **Export labels JSON** produces a portable, plan-scoped file with the
+tested A/B-to-run mapping and records whether identities had been revealed; **Import
+labels** restores that file only into the same plan.
+
+The report has no external assets or network requests, escapes model-authored content,
+and is independently hashed. `experiment verify` covers `report/` along with the
+preparation, execution, and validation envelopes.
+
+### Judge, calibrate, and decide
+
+Run the configured judge twice per pair with complete outcomes position-swapped. The
+judge can use a subscription CLI, or `runner: api-prompt` with a positive cost cap:
+
+```bash
+./.venv/bin/evalmine experiment judge <prepared-dir> --allow-provider-calls
+
+./.venv/bin/evalmine experiment decide <prepared-dir> \
+  --labels ~/Downloads/<experiment>-<plan-id>-labels.json
+```
+
+`judge` writes create-once raw calls and parsed verdicts under `judging/`. `decide`
+validates every label against the plan's tested A/B mapping, supports repeated label
+files for multiple annotators, computes consensus, position-swap scores, Cohen's kappa,
+per-episode agreement, bootstrap intervals, and a human↔judge disagreement queue. It
+writes `<prepared-dir>/decision/index.html`. A headline requires both the configured
+human-label coverage and judge-calibration gates; otherwise judge scores are explicitly
+diagnostic.
+
+### Run a backoff workflow DAG
+
+The workflow lane handles fan-out generation/enrichment jobs and dependencies without
+an implicit shell:
+
+```bash
+./.venv/bin/evalmine workflow plan examples/music-backoff-workflow.yaml
+./.venv/bin/evalmine workflow run examples/music-backoff-workflow.yaml \
+  --out /tmp/evalmine-workflows --allow-commands
+```
+
+It copies a fresh workspace, restores hash-pinned fixtures, runs independent nodes up
+to `max_parallel`, skips dependants after failure, captures bounded logs and declared
+JSON/HTML/image artifacts, and writes self-contained workflow HTML. Subscription-marked
+nodes require the additional `--allow-provider-calls` gate. Arbitrary direct-API shell
+nodes are refused; use the cost-capped suite/API lane for those calls. Nodes may declare
+a workspace-relative `cwd` and non-secret literal `env`; credential-bearing variables
+and password-bearing URLs are refused. Repository-local `.env`/provider config files and
+dependency caches are excluded from disposable workflow copies.
+
+The real music-analytics round-two evidence has a companion-repository importer. It pins
+the completed 100/250-track fixtures, 74-row ledger, analyzer scorecard, samples, findings,
+and original report by hash, then verifies every raw-output reference and produces a new
+visual evidence bundle without rerunning a model:
+
+```bash
+./.venv/bin/evalmine workflow plan examples/music-analytics-round2-import.yaml
+./.venv/bin/evalmine workflow run examples/music-analytics-round2-import.yaml \
+  --out /tmp/evalmine-workflows --allow-commands
+```
+
+That local example expects the sibling repository at `~/music_analytics`; change `root`
+for another checkout. It is intentionally a historical-evidence import, not a live API
+rerun. The music harness protects its throwaway database but does not expose an
+enforceable pre-call USD ceiling, so Evalmine will not launch it as an arbitrary API node.
 
 ## The suite file
 
@@ -244,14 +474,19 @@ template for you at the bottom of every run.
 
 ## MCP
 
-`evalmine-mcp` is a stdio MCP server exposing exactly three tools, which call the
-same `core.py` functions the CLI calls:
+`evalmine-mcp` is a stdio MCP server. The original suite tools remain, and v2 adds
+episode and workflow controls that call the same library functions as the CLI:
 
 | tool | does | spends |
 |---|---|---|
 | `run_suite(suite_path, models, max_cost, baseline, no_cache)` | runs the suite, returns the summary and the report paths | up to the cap |
 | `compare(report_a, report_b)` | the delta between two reports | nothing |
 | `last_report(suite_path)` | the most recent report for a suite | nothing |
+| `plan_experiment`, `prepare_experiment_tool`, `preflight_experiment_tool` | validate, isolate, and capability-probe episode experiments | nothing |
+| `execute_experiment_tool`, `check_experiment_tool` | execute agents and objective checks behind independent server/client gates | subscription/provider calls only when authorized |
+| `report_experiment`, `decide_experiment`, `inspect_experiment` | label, calibrate/score, and verify evidence | nothing |
+| `judge_experiment_tool` | position-swapped episode judging | capped/gated |
+| `plan_workflow`, `run_workflow_tool`, `inspect_workflow` | plan, run, and verify DAG workflows | commands/provider calls only when authorized |
 
 Register it by copying [.mcp.json.example](.mcp.json.example) to `.mcp.json`. Install
 the extra first: `pip install -e ".[mcp]"`.
@@ -260,9 +495,9 @@ The point is that an agent can run your evals *mid-task* — "before you swap th
 in this file, run the suite and tell me the win-rate" — instead of a person reading a
 report afterwards.
 
-Three tools rather than the whole CLI because an agent-facing surface should be the
-smallest set of verbs that supports the decision, and every extra tool is another way
-to spend money nobody authorised.
+Mutation and spend are not enabled merely because a tool exists. Provider execution,
+validator commands, external writes, and workflow commands each require an explicit
+tool argument plus the corresponding `EVALMINE_MCP_ALLOW_*` server environment gate.
 
 **The caps, and why the agent's default is lower than yours.** The cap is a parameter
 of `core.run_suite()`, not a CLI flag that MCP re-implements: there is exactly one
@@ -303,7 +538,7 @@ evalmine exists for three narrower reasons.
   number, it is a decision you have to defend in six months. `DECISIONS.md` is
   pre-filled by the report and written by a human, and it lives in your repo next to
   the code the decision was about.
-- **The surface is small enough to read in a sitting.** Roughly 6,000 lines including
+- **The surface is small enough to audit directly.** Roughly 10,000 lines of Python including
   four adapters, the reports and the execution checks. No LLM framework, no provider SDKs — three
   hand-written POSTs to documented JSON endpoints. That cost is real and worth
   stating: when a provider changes its API, we find out by breaking, not by
@@ -313,10 +548,12 @@ If those three do not matter to you, the honest recommendation is promptfoo.
 
 ## Not yet
 
-Out of scope for v0.1.0, and the README says so rather than leaving you to discover
-it: RAG or retrieval eval; agent or multi-turn trajectories; fine-tuning anything; a
-web UI; anything hosted; more than three providers; rubric auto-generation; MCP tools
-beyond the three above.
+Still out of scope: RAG or retrieval eval; fine-tuning; a hosted multi-user UI; more
+than three direct-API providers; and rubric auto-generation. Exact installed-plugin
+allowlisting remains unavailable for Codex and for Claude marketplace names, so those
+combinations fail preflight. The real music-analytics commands and database still need
+an operator-authorized domain run; the shipped offline fixture proves the generic DAG,
+frozen-fixture, artifact, judge/score, and eye-test shape.
 
 Every number in this README comes from the fake adapter on the invented example
 suite. No labelled run on a real suite has yet produced a calibrated number or a
@@ -326,7 +563,7 @@ suite. No labelled run on a real suite has yet produced a calibrated number or a
 
 ```bash
 pip install -e ".[dev,mcp]"
-python -m pytest -q          # 310 tests, none of which make a network call
+python -m pytest -q          # none of the tests make a provider call
 python -m ruff check src tests
 ```
 

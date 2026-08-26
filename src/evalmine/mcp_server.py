@@ -25,7 +25,14 @@ from .core import CostRefused, UsageError, load_report
 from .core import compare as core_compare
 from .core import last_report as core_last_report
 from .core import run_suite as core_run_suite
+from .decision import generate_decision_report, judge_experiment, verify_decision, verify_judging
+from .experiment import build_plan, load_experiment
+from .experiment_report import generate_experiment_report, verify_experiment_report
+from .runner import execute_experiment, preflight_experiment, verify_execution
 from .suite import load_suite
+from .validators import ValidationRefused, check_experiment, verify_validation
+from .workflow import load_workflow, run_workflow, verify_workflow, workflow_plan
+from .workspace import prepare_experiment, verify_prepared
 
 #: S11.4 defaults. The MCP cap is lower than the CLI's $2.00 default because
 #: the human at the CLI typed the number and the agent did not.
@@ -63,6 +70,21 @@ def _resolve_under_root(suite_path: str) -> Path | None:
     except ValueError:
         return None
     return resolved
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _path_refusal(path: str, kind: str = "path") -> dict[str, Any]:
+    root = _suite_root()
+    return {
+        "refused": True,
+        "reason": f"{kind}_outside_root",
+        kind: path,
+        "root": str(root),
+        "hint": f"{kind} must resolve inside EVALMINE_MCP_SUITE_ROOT ({root})",
+    }
 
 
 def _suite_root_refusal(suite_path: str) -> dict[str, Any]:
@@ -232,6 +254,224 @@ def last_report_impl(suite_path: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# v2 episode experiment and workflow tools
+# --------------------------------------------------------------------------
+
+
+def experiment_plan_impl(manifest_path: str) -> dict[str, Any]:
+    resolved = _resolve_under_root(manifest_path)
+    if resolved is None:
+        return _path_refusal(manifest_path, "manifest_path")
+    plan = build_plan(load_experiment(resolved))
+    value = plan.as_dict()
+    return {
+        "plan_id": value["plan_id"],
+        "experiment": value["experiment"],
+        "question": value["question"],
+        "run_count": value["schedule"]["run_count"],
+        "arms": [
+            {
+                "id": arm["id"],
+                "runner": arm["runner"],
+                "model": arm["model"],
+                "auth": arm["auth"],
+            }
+            for arm in value["arms"]
+        ],
+        "episodes": [
+            {"id": episode["id"], "repeats": episode["repeats"]}
+            for episode in value["episodes"]
+        ],
+        "warnings": value["warnings"],
+        "provider_calls": False,
+        "workspaces_created": False,
+    }
+
+
+def experiment_prepare_impl(manifest_path: str, out_dir: str) -> dict[str, Any]:
+    manifest = _resolve_under_root(manifest_path)
+    out = _resolve_under_root(out_dir)
+    if manifest is None:
+        return _path_refusal(manifest_path, "manifest_path")
+    if out is None:
+        return _path_refusal(out_dir, "out_dir")
+    result = prepare_experiment(load_experiment(manifest), out)
+    return {
+        "plan_id": result.plan.plan_id,
+        "root": str(result.root),
+        "run_count": len(result.runs),
+        "baseline_fingerprint": result.baseline_fingerprint,
+        "provider_calls": False,
+    }
+
+
+def experiment_inspect_impl(prepared_path: str) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    result = verify_prepared(prepared)
+    for name, verifier in (
+        ("execution", verify_execution),
+        ("validation", verify_validation),
+        ("report", verify_experiment_report),
+        ("judging", verify_judging),
+        ("decision", verify_decision),
+    ):
+        if (prepared / name).is_dir():
+            result[name] = verifier(prepared)
+    result["provider_calls"] = False
+    return result
+
+
+def experiment_preflight_impl(prepared_path: str) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    return preflight_experiment(prepared).as_dict()
+
+
+def experiment_execute_impl(
+    prepared_path: str,
+    *,
+    confirm_provider_calls: bool = False,
+    confirm_external_writes: bool = False,
+) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    if not confirm_provider_calls or not _env_enabled("EVALMINE_MCP_ALLOW_PROVIDER_CALLS"):
+        return {
+            "refused": True,
+            "reason": "provider_calls_not_authorized",
+            "hint": (
+                "set EVALMINE_MCP_ALLOW_PROVIDER_CALLS=1 on the server and pass "
+                "confirm_provider_calls=true"
+            ),
+        }
+    allow_external = confirm_external_writes and _env_enabled(
+        "EVALMINE_MCP_ALLOW_EXTERNAL_WRITES"
+    )
+    return execute_experiment(
+        prepared,
+        allow_provider_calls=True,
+        allow_external_writes=allow_external,
+    ).as_dict()
+
+
+def experiment_check_impl(
+    prepared_path: str, *, confirm_validator_commands: bool = False
+) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    allow = confirm_validator_commands and _env_enabled(
+        "EVALMINE_MCP_ALLOW_VALIDATOR_COMMANDS"
+    )
+    try:
+        return check_experiment(prepared, allow_validator_commands=allow).as_dict()
+    except ValidationRefused:
+        return {
+            "refused": True,
+            "reason": "validator_commands_not_authorized",
+            "hint": (
+                "set EVALMINE_MCP_ALLOW_VALIDATOR_COMMANDS=1 and pass "
+                "confirm_validator_commands=true"
+            ),
+        }
+
+
+def experiment_report_impl(prepared_path: str) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    return generate_experiment_report(prepared).as_dict()
+
+
+def experiment_judge_impl(
+    prepared_path: str,
+    *,
+    confirm_provider_calls: bool = False,
+    max_cost_usd: float | None = None,
+) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    if not confirm_provider_calls or not _env_enabled("EVALMINE_MCP_ALLOW_PROVIDER_CALLS"):
+        return {"refused": True, "reason": "provider_calls_not_authorized"}
+    ceiling = _env_float("EVALMINE_MCP_MAX_COST_CEILING", DEFAULT_MAX_COST_CEILING)
+    if max_cost_usd is not None and max_cost_usd > ceiling:
+        return {
+            "refused": True,
+            "reason": "max_cost_exceeds_ceiling",
+            "requested_usd": max_cost_usd,
+            "ceiling_usd": ceiling,
+        }
+    cap = max_cost_usd if max_cost_usd is not None else _env_float(
+        "EVALMINE_MCP_MAX_COST", DEFAULT_MAX_COST
+    )
+    return judge_experiment(
+        prepared, allow_provider_calls=True, max_cost_usd=cap
+    ).as_dict()
+
+
+def experiment_decide_impl(prepared_path: str, label_paths: list[str]) -> dict[str, Any]:
+    prepared = _resolve_under_root(prepared_path)
+    if prepared is None:
+        return _path_refusal(prepared_path, "prepared_path")
+    resolved_labels = []
+    for path in label_paths:
+        resolved = _resolve_under_root(path)
+        if resolved is None:
+            return _path_refusal(path, "label_path")
+        resolved_labels.append(str(resolved))
+    return generate_decision_report(prepared, resolved_labels).as_dict()
+
+
+def workflow_plan_impl(manifest_path: str) -> dict[str, Any]:
+    manifest = _resolve_under_root(manifest_path)
+    if manifest is None:
+        return _path_refusal(manifest_path, "manifest_path")
+    return workflow_plan(load_workflow(manifest))
+
+
+def workflow_run_impl(
+    manifest_path: str,
+    out_dir: str,
+    *,
+    confirm_commands: bool = False,
+    confirm_provider_calls: bool = False,
+) -> dict[str, Any]:
+    manifest = _resolve_under_root(manifest_path)
+    out = _resolve_under_root(out_dir)
+    if manifest is None:
+        return _path_refusal(manifest_path, "manifest_path")
+    if out is None:
+        return _path_refusal(out_dir, "out_dir")
+    if not confirm_commands or not _env_enabled("EVALMINE_MCP_ALLOW_WORKFLOW_COMMANDS"):
+        return {"refused": True, "reason": "workflow_commands_not_authorized"}
+    workflow = load_workflow(manifest)
+    needs_provider = any(node.provider_calls != "none" for node in workflow.nodes)
+    allow_provider = confirm_provider_calls and _env_enabled(
+        "EVALMINE_MCP_ALLOW_PROVIDER_CALLS"
+    )
+    if needs_provider and not allow_provider:
+        return {"refused": True, "reason": "provider_calls_not_authorized"}
+    return run_workflow(
+        workflow,
+        out,
+        allow_commands=True,
+        allow_provider_calls=allow_provider,
+    ).as_dict()
+
+
+def workflow_inspect_impl(workflow_path: str) -> dict[str, Any]:
+    resolved = _resolve_under_root(workflow_path)
+    if resolved is None:
+        return _path_refusal(workflow_path, "workflow_path")
+    return verify_workflow(resolved)
+
+
+# --------------------------------------------------------------------------
 # MCP wiring
 # --------------------------------------------------------------------------
 
@@ -241,10 +481,10 @@ try:
     server: MCPServer | None = MCPServer(
         "evalmine",
         instructions=(
-            "Run your own evalmine suites and read their results. Every call is capped "
-            "in USD (S11.4) and refuses, rather than truncates, a run that would exceed "
-            "its cap. run_suite spends money (up to the cap); compare and last_report "
-            "only read reports already on disk."
+            "Plan, prepare, execute, inspect, label, judge, and report evalmine suites, "
+            "episode experiments, and controlled workflows. Spend and process launches "
+            "are gated independently. Read-only tools return summaries and paths, never "
+            "raw provider responses."
         ),
     )
 
@@ -270,6 +510,96 @@ try:
     def last_report(suite_path: str) -> dict[str, Any]:
         """The most recent report for this suite, read from disk. Zero spend."""
         return last_report_impl(suite_path)
+
+    @server.tool(structured_output=True)
+    def plan_experiment(manifest_path: str) -> dict[str, Any]:
+        """Validate and summarize a v2 episode experiment without creating anything."""
+        return experiment_plan_impl(manifest_path)
+
+    @server.tool(structured_output=True)
+    def prepare_experiment_tool(manifest_path: str, out_dir: str) -> dict[str, Any]:
+        """Create isolated workspaces and immutable inputs; launches no provider."""
+        return experiment_prepare_impl(manifest_path, out_dir)
+
+    @server.tool(structured_output=True)
+    def inspect_experiment(prepared_path: str) -> dict[str, Any]:
+        """Verify all evidence envelopes currently present for an experiment."""
+        return experiment_inspect_impl(prepared_path)
+
+    @server.tool(structured_output=True)
+    def preflight_experiment_tool(prepared_path: str) -> dict[str, Any]:
+        """Probe runner capabilities without authenticating or contacting a provider."""
+        return experiment_preflight_impl(prepared_path)
+
+    @server.tool(structured_output=True)
+    def execute_experiment_tool(
+        prepared_path: str,
+        confirm_provider_calls: bool = False,
+        confirm_external_writes: bool = False,
+    ) -> dict[str, Any]:
+        """Execute prepared arms only when client and server gates both authorize calls."""
+        return experiment_execute_impl(
+            prepared_path,
+            confirm_provider_calls=confirm_provider_calls,
+            confirm_external_writes=confirm_external_writes,
+        )
+
+    @server.tool(structured_output=True)
+    def check_experiment_tool(
+        prepared_path: str, confirm_validator_commands: bool = False
+    ) -> dict[str, Any]:
+        """Run objective checks; command validators require a separate two-part gate."""
+        return experiment_check_impl(
+            prepared_path, confirm_validator_commands=confirm_validator_commands
+        )
+
+    @server.tool(structured_output=True)
+    def report_experiment(prepared_path: str) -> dict[str, Any]:
+        """Generate the blind self-contained HTML labeling queue."""
+        return experiment_report_impl(prepared_path)
+
+    @server.tool(structured_output=True)
+    def judge_experiment_tool(
+        prepared_path: str,
+        confirm_provider_calls: bool = False,
+        max_cost_usd: float | None = None,
+    ) -> dict[str, Any]:
+        """Run position-swapped judging behind provider and MCP cost gates."""
+        return experiment_judge_impl(
+            prepared_path,
+            confirm_provider_calls=confirm_provider_calls,
+            max_cost_usd=max_cost_usd,
+        )
+
+    @server.tool(structured_output=True)
+    def decide_experiment(prepared_path: str, label_paths: list[str]) -> dict[str, Any]:
+        """Import label exports, calibrate, score, and write decision HTML."""
+        return experiment_decide_impl(prepared_path, label_paths)
+
+    @server.tool(structured_output=True)
+    def plan_workflow(manifest_path: str) -> dict[str, Any]:
+        """Validate and summarize a workflow DAG without copying or launching."""
+        return workflow_plan_impl(manifest_path)
+
+    @server.tool(structured_output=True)
+    def run_workflow_tool(
+        manifest_path: str,
+        out_dir: str,
+        confirm_commands: bool = False,
+        confirm_provider_calls: bool = False,
+    ) -> dict[str, Any]:
+        """Run a contained workflow behind command and optional provider gates."""
+        return workflow_run_impl(
+            manifest_path,
+            out_dir,
+            confirm_commands=confirm_commands,
+            confirm_provider_calls=confirm_provider_calls,
+        )
+
+    @server.tool(structured_output=True)
+    def inspect_workflow(workflow_path: str) -> dict[str, Any]:
+        """Verify immutable workflow evidence and its final workspace hash."""
+        return workflow_inspect_impl(workflow_path)
 
 except ImportError:  # pragma: no cover - exercised only without the [mcp] extra
     server = None

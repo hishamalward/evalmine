@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hishamalward/evalmine/experiment.schema.json",
+  "title": "evalmine agent experiment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "experiment",
+    "version",
+    "question",
+    "seed",
+    "isolation",
+    "arms",
+    "episodes",
+    "evaluation"
+  ],
+  "properties": {
+    "experiment": { "$ref": "#/$defs/identifier" },
+    "version": { "const": 2 },
+    "question": { "type": "string", "minLength": 1 },
+    "seed": { "$ref": "#/$defs/seed" },
+    "isolation": { "$ref": "#/$defs/isolation" },
+    "schedule": { "$ref": "#/$defs/schedule" },
+    "validators": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/validator" }
+    },
+    "arms": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/arm" }
+    },
+    "episodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/episode" }
+    },
+    "evaluation": { "$ref": "#/$defs/evaluation" }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "ref", "dirty", "untracked"],
+      "properties": {
+        "repo": { "$ref": "#/$defs/relativePath" },
+        "ref": { "type": "string", "minLength": 1 },
+        "dirty": { "enum": ["reject", "capture"] },
+        "untracked": { "enum": ["deny", "include", "allowlisted"] },
+        "untracked_allowlist": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "untracked": { "const": "allowlisted" } } },
+          "then": { "required": ["untracked_allowlist"] },
+          "else": { "not": { "required": ["untracked_allowlist"] } }
+        }
+      ]
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace", "session", "external_writes"],
+      "properties": {
+        "workspace": { "enum": ["copy", "worktree"] },
+        "session": { "enum": ["fresh-per-run", "reuse-per-arm"] },
+        "external_writes": { "enum": ["deny", "allowlisted"] },
+        "external_write_allowlist": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "external_writes": { "const": "allowlisted" } } },
+          "then": { "required": ["external_write_allowlist"] },
+          "else": { "not": { "required": ["external_write_allowlist"] } }
+        }
+      ]
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "order": { "enum": ["rotate", "fixed"] },
+        "max_parallel": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instructions", "plugins"],
+      "properties": {
+        "instructions": { "enum": ["inherit", "none", "files"] },
+        "instruction_files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        },
+        "plugins": { "enum": ["inherit", "none", "allowlist", "directories"] },
+        "plugin_allowlist": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "plugin_directories": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "integer", "boolean", "null"]
+          }
+        },
+        "arguments": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "instructions": { "const": "files" } } },
+          "then": { "required": ["instruction_files"] },
+          "else": { "not": { "required": ["instruction_files"] } }
+        },
+        {
+          "if": { "properties": { "plugins": { "const": "allowlist" } } },
+          "then": { "required": ["plugin_allowlist"] },
+          "else": { "not": { "required": ["plugin_allowlist"] } }
+        },
+        {
+          "if": { "properties": { "plugins": { "const": "directories" } } },
+          "then": { "required": ["plugin_directories"] },
+          "else": { "not": { "required": ["plugin_directories"] } }
+        }
+      ]
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runner", "model", "auth", "configuration"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "runner": {
+          "enum": ["api-prompt", "claude-code", "codex-cli", "gemini-cli", "pipeline"]
+        },
+        "model": { "type": "string", "minLength": 1 },
+        "auth": { "enum": ["subscription", "api", "local", "inherited"] },
+        "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 },
+        "configuration": { "$ref": "#/$defs/configuration" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "auth": { "const": "api" } } },
+          "then": { "required": ["max_cost_usd"] },
+          "else": { "not": { "required": ["max_cost_usd"] } }
+        }
+      ]
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["prompt"] },
+        { "required": ["prompt_file"] }
+      ],
+      "properties": {
+        "prompt": { "type": "string", "minLength": 1 },
+        "prompt_file": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "episode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "turns"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string", "minLength": 1 },
+        "turns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/turn" }
+        },
+        "validators": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "repeats": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "repositoryDiffValidator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "expect"],
+      "properties": {
+        "type": { "const": "repository-diff" },
+        "expect": { "enum": ["any", "changed", "unchanged"] },
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        },
+        "exclude": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        },
+        "max_changed_files": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "commandValidator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "argv"],
+      "properties": {
+        "type": { "const": "command" },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "timeout_s": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "expected_exit": { "type": "integer", "minimum": 0, "maximum": 255 }
+      }
+    },
+    "requiredFilesValidator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "paths"],
+      "properties": {
+        "type": { "const": "required-files" },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        },
+        "non_empty": { "type": "boolean" }
+      }
+    },
+    "requiredSectionsValidator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target", "sections"],
+      "properties": {
+        "type": { "const": "required-sections" },
+        "target": { "enum": ["final-response", "file"] },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "case_sensitive": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "target": { "const": "file" } } },
+          "then": { "required": ["path"] },
+          "else": { "not": { "required": ["path"] } }
+        }
+      ]
+    },
+    "validator": {
+      "oneOf": [
+        { "$ref": "#/$defs/repositoryDiffValidator" },
+        { "$ref": "#/$defs/commandValidator" },
+        { "$ref": "#/$defs/requiredFilesValidator" },
+        { "$ref": "#/$defs/requiredSectionsValidator" }
+      ]
+    },
+    "humanEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "labels_per_pair": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "judgeEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "pairwise", "position_swap", "calibrate"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pairwise": { "type": "boolean" },
+        "position_swap": { "type": "boolean" },
+        "calibrate": { "type": "boolean" },
+        "runner": {
+          "enum": ["api-prompt", "claude-code", "codex-cli", "gemini-cli"]
+        },
+        "model": { "type": "string", "minLength": 1 },
+        "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 },
+        "max_tokens": { "type": "integer", "minimum": 64, "maximum": 32768 },
+        "min_kappa": { "type": "number", "minimum": -1, "maximum": 1 },
+        "min_labels": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectives", "blind", "human", "judge"],
+      "properties": {
+        "objectives": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "blind": { "enum": ["arm-identity", "none"] },
+        "human": { "$ref": "#/$defs/humanEvaluation" },
+        "judge": { "$ref": "#/$defs/judgeEvaluation" }
+      }
+    }
+  }
+}

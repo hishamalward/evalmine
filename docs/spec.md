@@ -91,19 +91,29 @@ hash; Markdown + JSON reports with a "what changed" section; three provider
 adapters (Anthropic, OpenAI, Google) behind one small interface, plus a fake
 adapter; an MCP server exposing exactly three tools.
 
-**Out — and the README says so.** RAG or retrieval eval; agent or multi-turn
-trajectories; fine-tuning; a web UI; anything hosted; more than three providers;
-rubric auto-generation; MCP tools beyond the three in §11.
+**Out of the v1 suite engine — and the README says so.** RAG or retrieval eval;
+agent or multi-turn trajectories; fine-tuning; a web UI; anything hosted; more
+than three direct-API providers; rubric auto-generation; MCP tools beyond the
+three in §11. The separately versioned v2 experiment substrate in §13A adds
+agent episodes without changing the v1 suite or report contract.
 
 ### 1.4 Blast radius
 
-A new, empty, public repository at `~/public_repos/evalmine`. Nothing outside it
-is created, read, or modified. At runtime the tool writes only under the working
-directory: the cache directory (default `.evalmine-cache/`), the reports
-directory (default `reports/`), and `DECISIONS.md` if and only if the user asks
-for it. It reads API keys from the environment and from nowhere else — no config
-file may contain a key, and `evalmine run` refuses to start if a suite file contains
-a string matching a known key prefix.
+For v1 suite commands, runtime writes stay under the working directory: the cache
+directory (default `.evalmine-cache/`), the reports directory (default `reports/`),
+and `DECISIONS.md` if and only if the user asks for it.
+
+V2 preparation is deliberately different: `experiment prepare` requires an explicit
+artifact directory outside the seed repository, because writing workspaces or evidence
+inside the baseline would contaminate the experiment. It may create detached git
+worktrees registered in the seed repository's git metadata when—and only when—the
+manifest explicitly selects `workspace: worktree`. `experiment discard --yes` removes
+those registrations before deleting the exact marked preparation directory. See §13A.
+
+The v1 suite engine reads API keys from the environment and from nowhere else. V2
+subscription runners strip key/token/secret/password/credential variables and rely on
+the provider CLI's cached local authentication; Phase 3A refuses agent arms that declare
+`auth: api`. No manifest or suite may contain a key-shaped string.
 
 ---
 
@@ -146,6 +156,9 @@ evalmine/
     cli.py               argparse only; no logic
     core.py              run_suite(), compare(), last_report() — the library API
     suite.py             load + validate a suite; render prompts
+    experiment.py        load + validate v2 manifests; deterministic run planning
+    experiment.schema.json
+    workspace.py         prepare, verify, and discard isolated v2 workspaces
     adapters/
       base.py            the Protocol, Request, Response, errors
       anthropic.py  openai.py  google.py  fake.py
@@ -177,6 +190,14 @@ evalmine prices [--table PATH] [--for <suite.yaml>]
 evalmine report <run-id | report.json>  # re-render report.md from report.json
 evalmine last <suite.yaml>              # print the most recent run-id for this suite
 evalmine compare <report_a> <report_b>  # print the §9.3 delta between two reports
+
+evalmine experiment validate <manifest.yaml>
+evalmine experiment plan <manifest.yaml> [--json]
+evalmine experiment prepare <manifest.yaml> --out <outside-seed-dir> [--json]
+evalmine experiment verify <prepared-dir> [--json]
+evalmine experiment preflight <prepared-dir> [--json]
+evalmine experiment execute <prepared-dir> --allow-provider-calls [--turn-timeout S] [--json]
+evalmine experiment discard <prepared-dir> --yes
 ```
 
 Flag notes:
@@ -1523,6 +1544,517 @@ secret-scan step in CI; no key anywhere in the repo or its history.
 tasks with labels, supplied after this spec is approved) comparing two model
 versions, producing the first report and the first `DECISIONS.md` entry. Until
 that exists, this is a tool that has never been used.
+
+
+---
+
+## 13A. Version-2 experiment preparation
+
+V2 is additive. It does not change v1 suite loading, metrics, provider adapters,
+reports, exit codes, or MCP tools. Its unit is one **arm running one repeat of one
+multi-turn episode in one isolated workspace**.
+
+### 13A.1 Planning inputs
+
+The strict `version: 2` manifest declares a git seed, isolation policy, at least two
+arms, at least one episode, and evaluation intent. Unknown keys and key-shaped strings
+are hard errors. Validation resolves `seed.ref` to a 40-character commit without
+launching an agent. A plan's identity covers the manifest bytes, resolved commit,
+external prompt-file contents, and instruction-file contents; changing any of them
+changes the plan and run keys.
+
+The deterministic schedule expands every arm × episode × repeat. `order: rotate`
+rotates the first arm between repeat blocks; `fixed` remains available but produces a
+bias warning. `session: fresh-per-run` gives every planned run a unique session key;
+`reuse-per-arm` remains available but produces a history-leakage warning.
+
+### 13A.2 Seed policy
+
+`dirty` governs tracked files. `reject` refuses preparation when the source worktree
+has staged or unstaged tracked changes. `capture` requires the resolved seed commit to
+equal the source worktree's `HEAD` and overlays the current tracked working-tree state
+onto each materialized commit.
+
+`untracked` is independent. `deny` refuses when any non-ignored untracked file exists;
+`include` copies every non-ignored untracked file; `allowlisted` copies only files that
+match `untracked_allowlist` and refuses if any other non-ignored untracked file exists.
+Ignored files are never captured. Symlinks are reproduced as symlinks; unsupported
+special files and submodule directories are hard errors.
+
+Preparation fingerprints the source working-tree state immediately before and after
+materialization. A change aborts preparation and cleans up what it created. The same
+fingerprint is stored for later `experiment verify` checks.
+
+### 13A.3 Workspaces and treatments
+
+`workspace: copy` extracts the resolved commit without `.git` metadata, then applies
+the declared captured overlay. `workspace: worktree` creates one detached worktree at
+the resolved commit for each planned run, then applies the same overlay. Every path is
+unique to one run; a preparation refuses to reuse an existing plan directory.
+
+Instruction treatments are repository-local:
+
+- `inherit` preserves the seed's project instruction files;
+- `none` removes the runner's recognized project instruction files from that run only;
+- `files` removes recognized project instruction files and writes the declared files,
+  in order, to the runner's canonical root instruction file.
+
+The recognized mappings are Claude Code → `CLAUDE.md`, Codex CLI → `AGENTS.md` plus
+`AGENTS.override.md`, and Gemini CLI → `GEMINI.md`. Plugin, settings, and argument
+treatments are persisted in `runs/<run-key>/treatment.json`, beside rather than inside
+the model-visible workspace. Phase 2 does not claim they are enforced until a provider
+runner consumes that capsule.
+
+### 13A.4 Artifact envelope and lifecycle
+
+`experiment prepare` requires `--out`; the resulting
+`<out>/<experiment>/<plan-id>/` must not overlap the seed repository. It contains:
+
+```
+prepared.json               format marker, seed fingerprint, lifecycle metadata
+manifest.yaml               exact validated manifest bytes
+plan.json                   complete machine-readable plan
+environment.json            Python/platform/evalmine and runner executable inventory
+inputs/index.json           content hashes and content-addressed input blobs
+baseline/blobs/<sha>.bin    deduplicated, redacted text needed for later patches
+preparation.jsonl           preparation event ledger
+runs/<run-key>/run.json     immutable run/workspace metadata
+runs/<run-key>/baseline.json  treated pre-agent file/symlink inventory and hashes
+runs/<run-key>/treatment.json  runner-local configuration capsule
+runs/<run-key>/workspace/   the only mutable run area
+```
+
+Evidence files are created once, made read-only, and hashed into the final marker;
+the workspace remains writable. `verify` detects missing, added, or changed evidence.
+Credentials, environment-variable values, and private provider configuration are not
+inventoried. `verify` checks the marker, path containment, run workspaces, and baseline
+fingerprint. It cannot detect arbitrary writes elsewhere on the machine; future runners
+must enforce `external_writes` through their native sandbox or fail closed.
+
+`discard` is the only deletion operation. It requires `--yes`, an exact preparation
+marker, and a path that matches the marker. It removes registered worktrees first and
+then that one preparation directory. It never accepts a repository root as a target.
+
+### 13A.5 Phase-2 success criteria
+
+1. Dirty and unexpected-untracked policies refuse before creating an artifact root.
+2. Two copy workspaces start byte-identical; editing one cannot change the other or
+   the seed repository.
+3. Worktree preparation creates one detached worktree per run and safe discard removes
+   every registration.
+4. `none` and `files` instruction treatments affect only their arm's workspaces.
+5. Changing prompt/instruction content changes the plan id without changing YAML.
+6. A repeated prepare refuses rather than overwriting evidence.
+7. Verify detects a baseline change made after preparation.
+8. The full test suite makes no network or provider call.
+
+
+## 13B. Version-2 agent execution
+
+Execution is a separate, explicit lifecycle after preparation. It is subscription-first:
+Claude Code, Codex CLI, and Gemini CLI use the authentication already held by their own
+installed command. Evalmine neither reads nor copies credentials, and it never records
+environment-variable values or raw authentication output. The v1 direct-API suite engine
+remains the `api-prompt` path; Phase 3 does not route it through an agent CLI.
+
+### 13B.1 Preflight and confirmation
+
+`experiment preflight <prepared-dir>` is read-only with respect to the prepared artifact
+and makes no model/provider call. It first performs the complete §13A `verify`, then, once
+per runner, resolves the executable, captures its version, checks its non-interactive and
+structured-output flags, and checks every requested treatment against the runner's declared
+capability. An absent executable, unsupported treatment, unsafe passthrough argument, API
+auth arm, `reuse-per-arm` session policy, or unenforceable external-write policy makes
+preflight `ok: false` and prevents execution. Authentication itself remains provider-owned;
+preflight may use a provider's documented local status command but stores only a boolean or
+`not-probed`, never its output.
+
+`experiment execute` repeats preflight in-process and additionally requires
+`--allow-provider-calls`. Omitting the confirmation is a preflight refusal (exit 4), not a
+usage error. Phase 3 accepts `auth: subscription`, `inherited`, or `local`; `auth: api` is
+refused because agent-CLI usage cannot yet be bounded by the v1 dollar-cost guard. A caller
+may set a per-turn process timeout; the default is 1800 seconds. Tests use injected fake
+executables and never contact a provider.
+
+### 13B.2 Runner mappings
+
+All prompts are supplied over stdin where the runner supports it and are never included in
+recorded command arguments. Each run gets a fresh provider session; follow-up turns resume
+only that run's session identifier.
+
+- **Claude Code:** `claude -p --output-format stream-json --verbose --model ...` with a
+  deterministic fresh UUID and `--resume` for follow-ups. `external_writes: deny` is mapped
+  to inline settings enabling native sandboxing with `failIfUnavailable: true`, no
+  unsandboxed-command escape hatch, and no extra write paths. Autonomous in-workspace edits
+  use `acceptEdits`. `plugins: none` is guaranteed only together with `instructions: none`,
+  using `--safe-mode`; other plugin isolation combinations fail closed. `plugins: inherit`
+  is supported. Named plugin allowlists are not claimed until Claude exposes an exact
+  per-session installed-plugin allowlist.
+- **Codex CLI:** `codex --ask-for-approval never exec --json --model ... --sandbox
+  workspace-write --cd ...`; follow-ups use `codex exec resume <thread-id>`. `plugins: none`
+  maps to `--ignore-user-config`; `plugins: inherit` is supported. Plugin allowlists fail
+  closed. One-turn runs add `--ephemeral`; multi-turn runs persist only the fresh thread
+  needed for resume in Codex's provider-owned state.
+- **Gemini CLI:** `gemini --prompt '' --output-format stream-json --model ... --sandbox
+  --approval-mode auto_edit`; follow-ups use `--resume <session-id>`. `plugins: none` maps
+  to `--extensions none`, and allowlists map to repeated `--extensions <name>`. On macOS the
+  runner requests the strict-open Seatbelt profile; on other systems it requires the native
+  sandbox command to be available. If the CLI or sandbox is absent, preflight fails.
+
+Runner-native settings are scalar overrides. Keys that could weaken sandboxing, approvals,
+workspace containment, auth, output capture, model identity, sessions, plugins, or executable
+selection are reserved and rejected. Free-form arguments are appended only after the same
+denylist check; dangerous/bypass flags and any flag owned by evalmine are hard errors.
+`external_writes: allowlisted` is not executable in Phase 3 and fails closed.
+
+### 13B.3 Evidence and failure semantics
+
+Execution writes only below `<prepared>/execution/` and inside each already-mutable run
+workspace. Preparation evidence hashing excludes that reserved directory; execution has its
+own final marker and hash set. An existing execution directory is never overwritten. When
+execution evidence exists, `experiment verify` validates both independent hash envelopes.
+
+```
+execution/execution.json             final status, runner inventory, evidence hashes
+execution/execution.jsonl            run start/completion ledger
+execution/runs/<run-key>/run.json    requested/observed identity, status, timing, session
+execution/runs/<run-key>/turn-NNN.raw.jsonl  exact structured stdout events
+execution/runs/<run-key>/turn-NNN.stderr.txt  provider stderr, possibly empty
+execution/runs/<run-key>/turn-NNN.final.txt   extracted final assistant response
+execution/runs/<run-key>/turn-NNN.json        normalized event/tool/usage summary
+```
+
+Every subprocess argument list is recorded with the prompt replaced by
+`<PROMPT_VIA_STDIN>`. Raw structured output is retained before normalization, except that
+the same credential-pattern scanner used for manifests replaces any key-shaped substring
+with `[REDACTED_CREDENTIAL]` before the bytes reach disk. Normalized
+turn evidence includes start/end time, duration, exit code, timeout status, provider event
+types, tool activity, final text, requested model, observed model when emitted, and session
+identifier. The run summary also anchors the final workspace tree hash immediately after
+the agent process ends, so later validation cannot attribute intervening manual edits to
+the agent. Credential values and the child environment are never recorded.
+
+A non-zero exit, timeout, malformed event line, missing session identifier before a
+follow-up, or missing final response fails that run but remains evidence. Independent runs
+continue so one provider failure cannot erase the comparison. The top-level status is
+`completed` only when every run succeeds and `partial` otherwise. Execution returns exit 2
+for a partial result after writing its evidence. It rechecks the source baseline after all
+runs; a changed baseline also makes the result partial.
+
+### 13B.4 Phase-3A success criteria
+
+1. Preflight makes zero provider calls and refuses every unsupported or unsafe treatment.
+2. Claude, Codex, and Gemini command construction is covered using fake executables.
+3. Two-turn fake episodes reuse one session within a run and never across run keys.
+4. Raw and normalized event evidence plus final responses survive a partial run.
+5. Provider prompts, auth output, credential values, and child environments do not appear
+   in command metadata.
+6. Adding execution evidence does not invalidate immutable preparation evidence.
+7. The complete test suite remains network-free and provider-call-free.
+
+
+## 13C. Version-2 objective validation
+
+Validation is a third lifecycle boundary after preparation and execution. A manifest
+declares named validator definitions at the top level, and each episode lists the names
+that apply to its runs. An undeclared name, unknown validator type, unknown option, or
+invalid type-specific combination is a manifest error. Validators are therefore never
+interpreted as best-effort magic strings.
+
+The supported Phase-4A definitions are:
+
+```yaml
+validators:
+  changed-source:
+    type: repository-diff
+    expect: changed                 # any | changed | unchanged
+    include: ["src/**", "tests/**"]
+    exclude: ["**/*.snap"]
+    max_changed_files: 20
+  tests:
+    type: command
+    argv: ["pytest", "-q"]          # direct argv; no implicit shell
+    timeout_s: 600
+    expected_exit: 0
+  deliverables:
+    type: required-files
+    paths: ["docs/findings.md"]
+    non_empty: true
+  response-shape:
+    type: required-sections
+    target: final-response          # or file, with path: ...
+    sections: ["Recommendation", "Largest risk"]
+    case_sensitive: false
+```
+
+`repository-diff` compares the final agent workspace to the treated snapshot captured
+immediately before the agent started, not merely to the Git commit. This matters for
+instruction-file ablations and dirty/untracked seed capture. It records added, modified,
+and deleted paths plus a redacted unified patch for UTF-8 text up to the documented size
+limits. Binary, oversized, and non-file changes remain in the change list with an explicit
+patch-omission reason. `include` and `exclude` filter the verdict and patch. `expect` tests
+whether the filtered set must be empty, non-empty, or either; `max_changed_files` is an
+additional ceiling.
+
+`required-files` checks regular files in that same post-agent snapshot and defaults to
+requiring non-empty content. `required-sections` performs literal substring checks, either
+over the last planned turn's final response or a declared workspace file. Matching is
+case-insensitive unless requested otherwise. These checks establish presence, not semantic
+quality, and reports must not describe them as proof that a section is correct.
+
+### 13C.1 Command boundary and ordering
+
+`experiment check <prepared-dir>` first verifies both the preparation and execution hash
+envelopes. Built-in validators capture and inspect one common post-agent snapshot before any
+command validator runs. Command validators then run last, in episode declaration order, so
+test caches, generated files, or formatters cannot retroactively alter the recorded agent
+diff. Before attribution, the current tree must match the final tree hash anchored by the
+runner; an intervening workspace edit fails that run with an explicit integrity error. Each
+command's before/after workspace mutation list is evidence.
+
+Command validators are direct argument arrays with no implicit shell. They receive a child
+environment with key/token/secret/password/credential-shaped variables removed, plus
+`CI=1` and `NO_COLOR=1`. Stdout and stderr are bounded, credential-pattern redacted, and
+stored separately. Exit code, timeout, duration, expected exit, truncation, and workspace
+mutations are recorded.
+
+Local validation commands are user-declared processes and may have ordinary host filesystem
+or network authority. Evalmine does not pretend otherwise: if any run uses a command
+validator, `experiment check` refuses before writing evidence unless the operator passes
+`--allow-validator-commands`. The marker says that no provider *runner* was launched; it
+does not claim an arbitrary declared process could not contact a network. Native validator
+sandboxing is future work.
+
+### 13C.2 Evidence and verdicts
+
+Validation writes a separate, create-once envelope:
+
+```
+validation/validation.json                 verdict, run totals, evidence hashes
+validation/validation.jsonl                validation event ledger
+validation/runs/<run-key>/run.json         execution status and validator totals
+validation/runs/<run-key>/<validator>.json structured result
+validation/runs/<run-key>/<validator>.patch  redacted repository patch, when applicable
+validation/runs/<run-key>/<validator>.stdout.txt  bounded command output
+validation/runs/<run-key>/<validator>.stderr.txt  bounded command errors
+```
+
+A run passes only when its agent execution succeeded and all its declared validators pass.
+A failed objective check is a measured verdict, not an infrastructure exception: other runs
+continue and the complete evidence envelope is written. The command exits 2 when any run
+fails and 0 only when every run passes. A repeated check refuses rather than overwriting.
+`experiment verify` validates the preparation, execution, and validation hash envelopes when
+they exist. Credential-shaped text is redacted before patches or command output reach disk.
+The baseline blob store retains only bounded UTF-8 text needed for patch construction;
+binary/oversized content is represented by metadata and hashes rather than duplicated.
+
+### 13C.3 Phase-4A success criteria
+
+1. A copy workspace with no `.git` metadata still yields a trustworthy treated-baseline diff.
+2. Repository changes, required files, and final-response/file sections produce inspectable
+   per-validator evidence and deterministic pass/fail verdicts.
+3. Test and lint commands cannot run without their separate explicit confirmation.
+4. Built-ins see the agent state before command-created files, and command mutations are named.
+5. One failed validator cannot erase independent run evidence.
+6. Validation evidence is create-once, independently hashed, and covered by `verify`.
+7. A workspace changed between execution and validation is not attributed to the agent.
+8. The test suite uses fake provider and command drivers and makes no network or provider call.
+
+
+## 13D. Version-2 episode report and blind human labeling
+
+`experiment report <prepared-dir>` is a derived, zero-provider lifecycle after execution;
+objective validation is included when present but is not required. Before rendering it
+verifies every available source envelope. It never launches an agent, judge, or validator
+command and never reads mutable workspace content. The report is built only from the
+already-redacted execution and validation evidence.
+
+Runs are paired only within the same episode/repeat block. Every unordered pair of arms in
+that block appears exactly once, so a three-arm block yields three comparisons. A pair id is
+a stable hash of the block and two run keys. A/B order is derived from that id in Python,
+and the complete click mapping is baked into page data:
+
+```
+A       -> the run key visibly occupying Outcome A
+B       -> the run key visibly occupying Outcome B
+tie     -> tie
+unclear -> unclear
+```
+
+The browser only looks up that table; it never derives or reverses model roles. Tests assert
+that the mapping for each visible pane points to that pane's run. The same plan regenerated
+from the same evidence therefore cannot silently swap A and B beneath saved labels.
+
+### 13D.1 Evidence shown and blindness boundary
+
+The HTML is one self-contained file with inline CSS, inline JavaScript, and escaped untrusted
+text. It makes no external asset or network request. Each outcome pane shows final response,
+per-turn final responses, duration, tool count, execution status, validator verdicts,
+repository patch, required-output checks, and bounded command output. This is trajectory and
+outcome evidence, not just final prose.
+
+Arm id, runner, requested model, and instruction/plugin treatment are hidden by default and
+shown only after the operator uses the global reveal control. Those identities still exist in
+the HTML source and embedded mapping because exported labels must resolve to actual run keys;
+the feature protects normal review from expectation bias, not against a reviewer deliberately
+inspecting source. Model-authored text may also identify itself and is not rewritten.
+
+The overview does not reveal which aggregate belongs to which arm until the same control is
+used. Execution/validator failures remain visible while blind because hiding outcome quality
+would defeat the evaluation.
+
+### 13D.2 Labels, resume, and export
+
+Choices are `A`, `B`, `tie`, and `unclear`, with an optional note. The browser saves draft
+labels to `localStorage` under a key scoped to the plan id and restores them on reload. Every
+storage access is failure-tolerant. Labels can be exported as a portable JSON file:
+
+```json
+{
+  "format": "evalmine-human-labels-v1",
+  "plan_id": "...",
+  "experiment": "...",
+  "exported_at": "...",
+  "labels": [{
+    "pair_id": "...",
+    "block": "...",
+    "episode": "...",
+    "repeat": 1,
+    "a_run_key": "...",
+    "b_run_key": "...",
+    "choice": "A",
+    "preferred_run_key": "...",
+    "note": null,
+    "labelled_at": "...",
+    "identities_revealed": false
+  }]
+}
+```
+
+Import accepts only the same format and plan id, ignores unknown pair ids, and accepts only
+the four declared choices. Human-label files are user-owned portable input; Phase 5A does not
+silently write browser state back into immutable evidence. Importing labels into the scoring
+and judge-calibration layer is Phase 5B.
+
+### 13D.3 Artifact envelope and success criteria
+
+The report is create-once and independently hashed:
+
+```
+report/index.html          self-contained responsive report and labeling queue
+report/data.json           complete derived episode/pair view
+report/report-marker.json  source identity, counts, and report evidence hashes
+```
+
+Preparation hashing excludes the reserved `execution/`, `validation/`, and `report/`
+lifecycles; each has its own marker and hash set. When present, `experiment verify` validates
+all four envelopes.
+
+1. N arms in one block yield `N*(N-1)/2` stable blind pairs.
+2. A/B clicks map to the run displayed in that pane, and ties/unclear remain non-preferences.
+3. Identity metadata is hidden by default; reveal state is explicit and exported with labels.
+4. Model output, patches, command output, and embedded JSON cannot inject HTML or close script.
+5. Labels survive reload, export to portable JSON, and import only into the same plan.
+6. The report works at desktop and narrow widths without external assets.
+7. A repeated generation refuses, tampering is detected, and source workspaces are untouched.
+8. Report tests use fake evidence and make no network or provider call.
+
+
+## 13E. Episode judging, calibration, and decision evidence
+
+`experiment judge <prepared-dir>` consumes the same verified episode pair view as the
+human report. For each pair it sends two calls with complete trajectories and outcome
+checks; the second swaps the two outcomes. Run/model/configuration identity and price are
+absent from the prompt. Subscription CLI judges use a read-only/plan-mode, no-plugin
+capsule; `api-prompt` judges require a positive USD cap and pass structured output through
+the existing provider adapters. `--fake` is deterministic and offline. Provider judging
+otherwise requires `--allow-provider-calls`.
+
+Judging is create-once under `judging/`. Every pass retains redacted raw output, parsed
+winner/reason, prompt hash, latency, usage, observed model, and cost when applicable.
+Scores use the §7.2 five-value position-swap table. Unparseable pairs are excluded, never
+silently coerced. Subscription billing is marked as such and does not become `$0`.
+
+`experiment decide <prepared-dir> --labels <file>...` accepts one or more Phase-5A label
+exports. Each file must match the plan; every choice and optional preferred-run mapping is
+validated against the Python-baked A/B table. An optional `annotator` identifies repeated
+raters. Duplicate annotator/pair rows fail. `unclear` is retained for audit but excluded
+from consensus. A tied annotator vote becomes unclear rather than an invented preference.
+
+The decision layer computes human and judge pair scores, deterministic bootstrap intervals,
+overall Cohen's kappa, per-episode agreement, disagreement rows, and all-arm aggregate
+rankings. A headline requires both the configured `labels_per_pair` coverage for every pair
+and the configured judge calibration gate (`min_labels`, default 10; `min_kappa`, default
+0.40). Otherwise the judge result is explicitly diagnostic. The self-contained
+`decision/index.html`, copied label inputs, full `data.json`, and `decision.json` hashes are
+create-once and covered by `experiment verify`.
+
+
+## 13F. Controlled workflow DAGs
+
+`evalmine workflow validate|plan|run|verify` is the domain backoff lane. A version-1
+workflow declares a source root, maximum parallelism, hash-pinned fixtures, and direct-argv
+nodes. A fixture can resolve relative to the manifest (default) or the workflow root.
+Nodes have `needs`, optional `fan_out`, workspace-relative `cwd`, literal non-secret `env`,
+timeout, artifact globs, and
+`provider_calls: none|subscription`. Validation rejects unknown fields, unsafe relative
+paths, missing fixtures, hash mismatches, duplicate fan-out values, unknown dependencies,
+cycles, credential-bearing environment names, password-bearing URLs, and arbitrary
+direct-API command nodes. Cost-capped direct APIs stay in the suite lane.
+
+Run requires `--allow-commands`; subscription nodes additionally require
+`--allow-provider-calls`. The runner copies a fresh workspace outside the source root,
+restores frozen fixtures, executes topological levels with bounded concurrency, skips
+dependants after failure, excludes local `.env` files, provider configuration directories,
+private-key files, dependency caches, and build caches from the copy, strips secret-shaped
+inherited environment variables, and bounds/redacts stdout and stderr. Declared regular-file
+artifacts up to 10 MiB are copied into evidence;
+JSON, HTML, and images retain MIME metadata and HTML/images are flagged as eye-test
+artifacts. The final workspace tree, logs, artifacts, report data, and self-contained HTML
+are tamper-verified. `examples/music-backoff-workflow.yaml` is an offline
+generate→enrich→judge→score fixture with three-way fan-out and a human eye-test HTML output.
+`examples/music-analytics-round2-import.yaml` is a local companion-repository adapter for
+the completed real bakeoff. It pins and imports the 100/250-track fixtures, 74 ledger rows,
+74 raw references, eight-fixture analyzer results, side-by-side sample packet, findings,
+and original human report without database or provider calls. It does not launch the old
+direct-API harness because that process lacks an externally enforceable pre-call USD cap.
+
+
+## 13G. Runner cost, plugin, and external-write controls
+
+- `auth: api` on an agent arm requires a per-run `max_cost_usd`; only Claude Code is
+  executable because its print mode exposes a native `--max-budget-usd`. Evalmine divides
+  the run ceiling across its declared turns so repeated print/resume invocations cannot
+  multiply the cap. Other API-auth agent CLIs
+  fail preflight; their direct API adapters remain available in the suite lane.
+- `external_writes: allowlisted` requires absolute templates under an existing non-symlink
+  parent, with `{run_key}` in every target. The resolved target must not already exist;
+  evalmine creates one unique empty directory per run so arms cannot share mutable history.
+  Filesystem/home roots are rejected. Gemini fails closed. Claude maps targets into sandbox
+  `allowWrite`; Codex uses `--add-dir`. Execution also requires
+  `--allow-external-writes` and records before/after hashes and changed targets.
+- `plugins: directories` adds pinned workspace-relative Claude plugin directories with
+  repeatable `--plugin-dir`. It is an addition to the current product environment, not an
+  exact installed-plugin allowlist. Gemini's existing allowlist maps to exact extensions.
+  Claude marketplace-name and Codex per-run allowlists fail closed.
+- Every run records usage and `billing.basis`. Subscription cost is
+  `not-applicable-subscription`; metered API cost is reported only when emitted by the
+  provider. Missing marginal cost is unavailable, never zero.
+
+
+## 13H. Version-2 MCP control plane
+
+The original capped suite tools remain. MCP also exposes episode plan, prepare, inspect,
+preflight, execute, check, report, judge, and decide operations plus workflow plan, run,
+and inspect. All paths must remain inside `EVALMINE_MCP_SUITE_ROOT`. Read-only calls return
+summaries and artifact paths rather than raw model text.
+
+Provider calls, validator commands, external writes, and workflow commands use two-part
+authorization: a boolean on the tool call and a corresponding server environment flag
+(`EVALMINE_MCP_ALLOW_PROVIDER_CALLS`, `...VALIDATOR_COMMANDS`,
+`...EXTERNAL_WRITES`, `...WORKFLOW_COMMANDS`). API judge caps cannot exceed
+`EVALMINE_MCP_MAX_COST_CEILING`. A missing gate produces a structured refusal before the
+operation creates evidence or launches a process.
 
 
 ---

@@ -1,0 +1,6 @@
+{
+  "songs": [
+    {"artist": "Example Artist", "title": "First Song"},
+    {"artist": "Another Artist", "title": "Second Song"}
+  ]
+}

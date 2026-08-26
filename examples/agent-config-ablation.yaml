@@ -1,0 +1,87 @@
+experiment: claude-config-ablation
+version: 2
+question: Do my Claude instructions and plugins improve real repository work?
+
+seed:
+  repo: ..
+  ref: HEAD
+  dirty: reject
+  untracked: deny
+
+isolation:
+  workspace: copy
+  session: fresh-per-run
+  external_writes: deny
+
+schedule:
+  order: rotate
+  max_parallel: 3
+
+validators:
+  repo-unchanged:
+    type: repository-diff
+    expect: unchanged
+  required-sections:
+    type: required-sections
+    target: final-response
+    sections:
+      - largest uncontrolled variable
+      - revised plan
+
+arms:
+  - id: current-config
+    runner: claude-code
+    model: claude-opus-5
+    auth: subscription
+    configuration:
+      instructions: inherit
+      plugins: inherit
+
+  - id: no-config
+    runner: claude-code
+    model: claude-opus-5
+    auth: subscription
+    configuration:
+      instructions: none
+      plugins: none
+
+  - id: candidate-config
+    runner: claude-code
+    model: claude-opus-5
+    auth: subscription
+    configuration:
+      instructions: files
+      instruction_files: [treatments/claude-candidate.md]
+      plugins: directories
+      plugin_directories: [examples/plugins/candidate-review-plugin]
+
+episodes:
+  - id: redesign-evalmine
+    title: Understand and redesign evalmine
+    turns:
+      - prompt_file: prompts/redesign-evalmine.md
+      - prompt: |
+          Challenge the recommendation you just made. Name the largest uncontrolled
+          variable and revise the plan if that variable changes the conclusion.
+    validators: [repo-unchanged, required-sections]
+    repeats: 3
+
+evaluation:
+  objectives:
+    - Correct understanding of the repository
+    - Quality of experimental controls
+    - Specificity and feasibility of recommendations
+    - Responsiveness to the follow-up
+  blind: arm-identity
+  human:
+    required: true
+    labels_per_pair: 1
+  judge:
+    enabled: true
+    pairwise: true
+    position_swap: true
+    calibrate: true
+    runner: codex-cli
+    model: gpt-5.6
+    min_kappa: 0.4
+    min_labels: 10

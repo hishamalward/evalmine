@@ -1,0 +1,63 @@
+workflow: music-analytics-round2-evidence-import
+version: 1
+root: ../../../music_analytics
+max_parallel: 3
+
+fixtures:
+  - source: music-analytics-round2-import.py
+    target: .evalmine/import-round2.py
+  - source: apps/web/eval/fixtures/round2-100.json
+    base: root
+    target: apps/web/eval/fixtures/round2-100.json
+    sha256: e73050d5b7f830ac512fe054bd744530f2d4eef63e7064717e3bba773c88c486
+  - source: apps/web/eval/fixtures/round2-100.summary.json
+    base: root
+    target: apps/web/eval/fixtures/round2-100.summary.json
+    sha256: 01e92cb83409907ac594f5d405e537aaa25928661e5256212f02b5170ba3d0ee
+  - source: apps/web/eval/fixtures/round2-250.json
+    base: root
+    target: apps/web/eval/fixtures/round2-250.json
+    sha256: e4bbfb259b0dc54e39fafe3cbe11d14e4c6d368ca1a54e9eabb42bdb80bb0bce
+  - source: apps/web/eval/fixtures/round2-250.summary.json
+    base: root
+    target: apps/web/eval/fixtures/round2-250.summary.json
+    sha256: 312c0da91e0ccf4ebbbb717df7c4fdef8755ba200140b08bd4013c6283beb24d
+  - source: apps/web/eval/results/round-2/ledger.jsonl
+    base: root
+    target: apps/web/eval/results/round-2/ledger.jsonl
+    sha256: 0632617bc17d0e944704ca58ee5ef0449a7ee810489a369e1a177f76bf6a4830
+  - source: apps/web/eval/results/round-2/analyzer-fixtures.json
+    base: root
+    target: apps/web/eval/results/round-2/analyzer-fixtures.json
+    sha256: dcdf701508e25762738713209b55092d21e3fc05ab3c37580d0949d424724fcc
+  - source: apps/web/eval/results/round-2/report-samples.json
+    base: root
+    target: apps/web/eval/results/round-2/report-samples.json
+    sha256: 8ef934b4d0f2e8811202c88bdb35f8a26a71a4bb8a362d029f2b5e18e6825df2
+  - source: apps/web/eval/results/round-2/findings.md
+    base: root
+    target: apps/web/eval/results/round-2/findings.md
+    sha256: ba52ecd04b4893111ac87529f63467010a6a68a5113b63366dd2b90d55a6d32d
+  - source: apps/web/eval/analysis/round-2-report.html
+    base: root
+    target: apps/web/eval/analysis/round-2-report.html
+    sha256: aa151107b626cb4899f8a61261e9278513e0b6870868917a67567e1d03bee786
+
+nodes:
+  - id: audit
+    argv: [python3, .evalmine/import-round2.py, audit, "{item}"]
+    fan_out: [volume, creative, nl]
+    artifacts: [".evalmine-output/audit-{item}.json"]
+
+  - id: score
+    needs: [audit]
+    argv: [python3, .evalmine/import-round2.py, score]
+    artifacts: [.evalmine-output/scorecard.json]
+
+  - id: human-review
+    needs: [score]
+    argv: [python3, .evalmine/import-round2.py, review]
+    artifacts:
+      - .evalmine-output/round2-import.html
+      - apps/web/eval/analysis/round-2-report.html
+      - apps/web/eval/results/round-2/findings.md

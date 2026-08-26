@@ -1,0 +1,87 @@
+experiment: opus-working-style
+version: 2
+question: Which Opus generation works best on my real repository tasks?
+
+seed:
+  repo: ..
+  ref: HEAD
+  dirty: reject
+  untracked: deny
+
+isolation:
+  workspace: copy
+  session: fresh-per-run
+  external_writes: deny
+
+schedule:
+  order: rotate
+  max_parallel: 3
+
+validators:
+  repo-unchanged:
+    type: repository-diff
+    expect: unchanged
+  required-sections:
+    type: required-sections
+    target: final-response
+    sections:
+      - strongest reason to keep
+      - largest uncontrolled variable
+      - smallest implementation slice
+
+arms:
+  - id: opus-5-current
+    runner: claude-code
+    model: claude-opus-5
+    auth: subscription
+    configuration:
+      instructions: inherit
+      plugins: inherit
+
+  - id: opus-4-8-current
+    runner: claude-code
+    model: claude-opus-4-8
+    auth: subscription
+    configuration:
+      instructions: inherit
+      plugins: inherit
+
+  - id: opus-4-6-current
+    runner: claude-code
+    model: claude-opus-4-6
+    auth: subscription
+    configuration:
+      instructions: inherit
+      plugins: inherit
+
+episodes:
+  - id: redesign-evalmine
+    title: Understand and redesign evalmine
+    turns:
+      - prompt_file: prompts/redesign-evalmine.md
+      - prompt: |
+          Now challenge your own recommendation. Identify the strongest reason to keep
+          the current architecture, the largest uncontrolled variable in your proposed
+          experiment, and the smallest implementation slice that proves the design.
+    validators: [repo-unchanged, required-sections]
+    repeats: 3
+
+evaluation:
+  objectives:
+    - Correct understanding of the repository
+    - Fit to the stated real-world workflows
+    - Control of history and workspace contamination
+    - Specificity and feasibility of the implementation plan
+  blind: arm-identity
+  human:
+    required: true
+    labels_per_pair: 1
+  judge:
+    enabled: true
+    pairwise: true
+    position_swap: true
+    calibrate: true
+    runner: codex-cli
+    model: gpt-5.6
+    min_kappa: 0.4
+    min_labels: 10

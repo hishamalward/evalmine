@@ -23,10 +23,47 @@ from .core import (
     load_report,
     run_suite,
 )
+from .decision import (
+    DecisionError,
+    JudgeRefused,
+    generate_decision_report,
+    judge_experiment,
+    verify_decision,
+    verify_judging,
+)
+from .experiment import ExperimentError, build_plan, load_experiment
+from .experiment_report import (
+    ExperimentReportError,
+    generate_experiment_report,
+    verify_experiment_report,
+)
 from .metrics import format_kappa
 from .prices import PriceTableError, UnknownModelError, load_price_table
 from .report import render_markdown
+from .runner import (
+    DEFAULT_TURN_TIMEOUT,
+    ExecutionRefused,
+    RunnerError,
+    execute_experiment,
+    preflight_experiment,
+    verify_execution,
+)
 from .suite import SuiteError, load_suite
+from .validators import (
+    ValidationError,
+    ValidationRefused,
+    check_experiment,
+    verify_validation,
+)
+from .workflow import (
+    WorkflowError,
+    WorkflowRefused,
+    load_workflow,
+    run_workflow,
+    verify_workflow,
+    workflow_plan,
+)
+from .workspace import discard_prepared, prepare_experiment, verify_prepared
 
 EXIT_OK = 0
 EXIT_USAGE = 1
@@ -100,6 +137,165 @@ def build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--out", default="reports")
     compare_cmd.add_argument("--json", action="store_true")
 
+    experiment = subparsers.add_parser(
+        "experiment",
+        help="plan, run, check, and report a v2 agent experiment",
+    )
+    experiment_subparsers = experiment.add_subparsers(
+        dest="experiment_verb", required=True
+    )
+    experiment_validate = experiment_subparsers.add_parser(
+        "validate",
+        help="validate the manifest and all local references; no calls or workspaces",
+    )
+    experiment_validate.add_argument("manifest")
+    experiment_plan = experiment_subparsers.add_parser(
+        "plan",
+        help="print the deterministic arm x episode x repeat schedule",
+    )
+    experiment_plan.add_argument("manifest")
+    experiment_plan.add_argument(
+        "--json", action="store_true", help="print the complete machine-readable plan"
+    )
+    experiment_prepare = experiment_subparsers.add_parser(
+        "prepare",
+        help="materialize isolated workspaces and evidence without launching agents",
+    )
+    experiment_prepare.add_argument("manifest")
+    experiment_prepare.add_argument(
+        "--out",
+        required=True,
+        help="artifact base directory; must be outside the seed repository",
+    )
+    experiment_prepare.add_argument("--json", action="store_true")
+    experiment_verify = experiment_subparsers.add_parser(
+        "verify",
+        help="verify workspaces and confirm that the baseline has not changed",
+    )
+    experiment_verify.add_argument("prepared")
+    experiment_verify.add_argument("--json", action="store_true")
+    experiment_preflight = experiment_subparsers.add_parser(
+        "preflight",
+        help="probe local agent CLI capabilities without making provider calls",
+    )
+    experiment_preflight.add_argument("prepared")
+    experiment_preflight.add_argument("--json", action="store_true")
+    experiment_preflight.add_argument(
+        "--executable",
+        action="append",
+        default=[],
+        metavar="RUNNER=PATH",
+        help="override a runner executable (repeatable; useful for controlled wrappers)",
+    )
+    experiment_execute = experiment_subparsers.add_parser(
+        "execute",
+        help="run prepared agent episodes and capture evidence",
+    )
+    experiment_execute.add_argument("prepared")
+    experiment_execute.add_argument(
+        "--allow-provider-calls",
+        action="store_true",
+        help="required acknowledgement that installed CLIs may contact providers",
+    )
+    experiment_execute.add_argument(
+        "--allow-external-writes",
+        action="store_true",
+        help="required when the manifest permits writes to exact paths outside workspaces",
+    )
+    experiment_execute.add_argument(
+        "--turn-timeout",
+        type=int,
+        default=DEFAULT_TURN_TIMEOUT,
+        metavar="SECONDS",
+    )
+    experiment_execute.add_argument("--json", action="store_true")
+    experiment_execute.add_argument(
+        "--executable",
+        action="append",
+        default=[],
+        metavar="RUNNER=PATH",
+        help="override a runner executable (repeatable; useful for controlled wrappers)",
+    )
+    experiment_check = experiment_subparsers.add_parser(
+        "check",
+        help="run declared objective validators over completed execution evidence",
+    )
+    experiment_check.add_argument("prepared")
+    experiment_check.add_argument(
+        "--allow-validator-commands",
+        action="store_true",
+        help="required before manifest-declared test/lint processes may run",
+    )
+    experiment_check.add_argument("--json", action="store_true")
+    experiment_report = experiment_subparsers.add_parser(
+        "report",
+        help="generate a self-contained blind HTML episode report and labeling queue",
+    )
+    experiment_report.add_argument("prepared")
+    experiment_report.add_argument("--json", action="store_true")
+    experiment_judge = experiment_subparsers.add_parser(
+        "judge",
+        help="blindly judge every episode pair twice with positions swapped",
+    )
+    experiment_judge.add_argument("prepared")
+    experiment_judge.add_argument("--allow-provider-calls", action="store_true")
+    experiment_judge.add_argument(
+        "--max-cost", type=float, default=None, help="USD; required for API judging"
+    )
+    experiment_judge.add_argument("--prices", default=None)
+    experiment_judge.add_argument(
+        "--fake", action="store_true", help="use the deterministic offline judge"
+    )
+    experiment_judge.add_argument("--json", action="store_true")
+    experiment_judge.add_argument(
+        "--executable", action="append", default=[], metavar="RUNNER=PATH"
+    )
+    experiment_decide = experiment_subparsers.add_parser(
+        "decide",
+        help="import human labels, calibrate the judge, score arms, and write decision HTML",
+    )
+    experiment_decide.add_argument("prepared")
+    experiment_decide.add_argument(
+        "--labels", action="append", required=True, help="exported label JSON (repeatable)"
+    )
+    experiment_decide.add_argument("--json", action="store_true")
+    experiment_discard = experiment_subparsers.add_parser(
+        "discard",
+        help="remove one marked preparation and its worktree registrations",
+    )
+    experiment_discard.add_argument("prepared")
+    experiment_discard.add_argument(
+        "--yes", action="store_true", help="required confirmation for deletion"
+    )
+
+    workflow = subparsers.add_parser(
+        "workflow", help="validate and run a controlled enrichment/backoff DAG"
+    )
+    workflow_subparsers = workflow.add_subparsers(dest="workflow_verb", required=True)
+    workflow_validate = workflow_subparsers.add_parser(
+        "validate", help="validate the DAG and frozen fixture hashes; launches nothing"
+    )
+    workflow_validate.add_argument("manifest")
+    workflow_validate.add_argument("--json", action="store_true")
+    workflow_plan_cmd = workflow_subparsers.add_parser(
+        "plan", help="show topological levels, fan-out, gates, and commands"
+    )
+    workflow_plan_cmd.add_argument("manifest")
+    workflow_plan_cmd.add_argument("--json", action="store_true")
+    workflow_run = workflow_subparsers.add_parser(
+        "run", help="copy the workspace, restore fixtures, and execute the DAG"
+    )
+    workflow_run.add_argument("manifest")
+    workflow_run.add_argument("--out", required=True)
+    workflow_run.add_argument("--allow-commands", action="store_true")
+    workflow_run.add_argument("--allow-provider-calls", action="store_true")
+    workflow_run.add_argument("--json", action="store_true")
+    workflow_verify = workflow_subparsers.add_parser(
+        "verify", help="verify workflow evidence and the frozen final workspace"
+    )
+    workflow_verify.add_argument("root")
+    workflow_verify.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -120,7 +316,29 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_last(args)
         if args.verb == "compare":
             return _cmd_compare(args)
-    except (SuiteError, UnknownModelError, PriceTableError, UsageError) as exc:
+        if args.verb == "experiment":
+            return _cmd_experiment(args)
+        if args.verb == "workflow":
+            return _cmd_workflow(args)
+    except (ExecutionRefused, ValidationRefused, JudgeRefused, WorkflowRefused) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED_PREFLIGHT
+    except (
+        RunnerError,
+        ValidationError,
+        ExperimentReportError,
+        DecisionError,
+        WorkflowError,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME
+    except (
+        ExperimentError,
+        SuiteError,
+        UnknownModelError,
+        PriceTableError,
+        UsageError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except CostRefused as exc:
@@ -286,6 +504,303 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     print()
     print(_render_what_changed(diff))
     return EXIT_OK
+
+
+def _cmd_experiment(args: argparse.Namespace) -> int:
+    if args.experiment_verb == "verify":
+        result = verify_prepared(args.prepared)
+        execution = None
+        validation = None
+        report = None
+        if (Path(result["root"]) / "execution").is_dir():
+            execution = verify_execution(args.prepared)
+            result["execution"] = execution
+        if (Path(result["root"]) / "validation").is_dir():
+            validation = verify_validation(args.prepared)
+            result["validation"] = validation
+        if (Path(result["root"]) / "report").is_dir():
+            report = verify_experiment_report(args.prepared)
+            result["report"] = report
+        if (Path(result["root"]) / "judging").is_dir():
+            result["judging"] = verify_judging(args.prepared)
+        if (Path(result["root"]) / "decision").is_dir():
+            result["decision"] = verify_decision(args.prepared)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            suffix = (
+                f"; execution {execution['status']} ({execution['succeeded']}/"
+                f"{execution['run_count']} succeeded)"
+                if execution
+                else ""
+            )
+            if validation:
+                suffix += (
+                    f"; validation {validation['verdict']} ({validation['passed']}/"
+                    f"{validation['run_count']} passed)"
+                )
+            if report:
+                suffix += f"; report {report['pair_count']} blind pairs"
+            print(
+                f"ok: {result['root']} - {result['run_count']} isolated workspaces; "
+                f"baseline unchanged{suffix}"
+            )
+        return EXIT_OK
+
+    if args.experiment_verb == "preflight":
+        overrides = _runner_executable_overrides(args.executable)
+        result = preflight_experiment(args.prepared, executable_overrides=overrides)
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        elif result.ok:
+            runner_text = ", ".join(
+                f"{probe.runner} {probe.version or '(unknown version)'}"
+                for probe in result.probes
+            )
+            print(
+                f"ok: {result.root} - {result.run_count} runs; {runner_text}; "
+                "provider calls: 0"
+            )
+        else:
+            print(
+                f"refused: {result.root} - preflight found {len(result.issues)} issue(s)",
+                file=sys.stderr,
+            )
+            for issue in result.issues:
+                print(f"  - {issue}", file=sys.stderr)
+        return EXIT_OK if result.ok else EXIT_REFUSED_PREFLIGHT
+
+    if args.experiment_verb == "execute":
+        overrides = _runner_executable_overrides(args.executable)
+        result = execute_experiment(
+            args.prepared,
+            allow_provider_calls=args.allow_provider_calls,
+            allow_external_writes=args.allow_external_writes,
+            turn_timeout=args.turn_timeout,
+            executable_overrides=overrides,
+        )
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"{result.status}: {result.root} - {result.succeeded}/{result.run_count} "
+                "runs succeeded"
+            )
+        return EXIT_OK if result.status == "completed" else EXIT_RUNTIME
+
+    if args.experiment_verb == "check":
+        result = check_experiment(
+            args.prepared,
+            allow_validator_commands=args.allow_validator_commands,
+        )
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"{result.verdict}: {result.root} - {result.passed}/{result.run_count} "
+                "runs passed; provider runners launched: 0"
+            )
+        return EXIT_OK if result.verdict == "passed" else EXIT_RUNTIME
+
+    if args.experiment_verb == "report":
+        result = generate_experiment_report(args.prepared)
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"wrote {result.html} - {result.pair_count} blind pairs across "
+                f"{result.run_count} runs; provider runners launched: 0"
+            )
+        return EXIT_OK
+
+    if args.experiment_verb == "judge":
+        overrides = _runner_executable_overrides(args.executable)
+        result = judge_experiment(
+            args.prepared,
+            allow_provider_calls=args.allow_provider_calls,
+            max_cost_usd=args.max_cost,
+            fake=args.fake,
+            prices_path=args.prices,
+            executable_overrides=overrides,
+        )
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"{result.status}: {result.root} - {result.pair_count} pairs, "
+                f"{result.call_count} position-swapped calls"
+            )
+        return EXIT_OK
+
+    if args.experiment_verb == "decide":
+        result = generate_decision_report(args.prepared, args.labels)
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            eligibility = "headline eligible" if result.headline_eligible else "diagnostic only"
+            print(
+                f"wrote {result.html} - {result.labelled_pairs} human-labelled pairs, "
+                f"{result.judged_pairs} judged pairs; {eligibility}"
+            )
+        return EXIT_OK
+
+    if args.experiment_verb == "discard":
+        if not args.yes:
+            raise ExperimentError(
+                "discard deletes prepared workspaces; pass --yes to confirm the exact path"
+            )
+        result = discard_prepared(args.prepared)
+        print(
+            f"discarded {result['root']} - {result['run_count']} workspaces; "
+            "this cannot be recovered"
+        )
+        return EXIT_OK
+
+    experiment = load_experiment(args.manifest)
+    plan = build_plan(experiment)
+    if args.experiment_verb == "validate":
+        turns = sum(len(episode.turns) for episode in experiment.episodes)
+        episode_label = "episode" if len(experiment.episodes) == 1 else "episodes"
+        print(
+            f"ok: {experiment.path} - {len(experiment.arms)} arms, "
+            f"{len(experiment.episodes)} {episode_label}, {turns} episode turns, "
+            f"{len(plan.runs)} planned runs; no agents launched"
+        )
+        for warning in plan.warnings:
+            print(f"warning: {warning}")
+        return EXIT_OK
+
+    if args.experiment_verb == "plan":
+        if args.json:
+            print(json.dumps(plan.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+            return EXIT_OK
+        print(f"plan {plan.plan_id}  ({experiment.name})")
+        print(f"  question: {experiment.question}")
+        print(
+            f"  seed: {experiment.seed.repo} @ {experiment.seed.ref} "
+            f"({experiment.seed.commit[:12]}) "
+            f"(dirty={experiment.seed.dirty}, untracked={experiment.seed.untracked})"
+        )
+        print(
+            f"  isolation: workspace={experiment.isolation.workspace}, "
+            f"session={experiment.isolation.session}, "
+            f"external-writes={experiment.isolation.external_writes}"
+        )
+        print(
+            f"  schedule: {experiment.order}, max-parallel={experiment.max_parallel}, "
+            f"runs={len(plan.runs)}"
+        )
+        print()
+        print("  arms:")
+        for arm in experiment.arms:
+            print(
+                f"    {arm.id}: {arm.runner} / {arm.model} / {arm.auth}; "
+                f"instructions={arm.configuration.instructions}, "
+                f"plugins={arm.configuration.plugins}"
+            )
+        print()
+        print(f"{'#':>3}  {'block':<28} {'arm':<24} {'runner':<13} model")
+        for run in plan.runs:
+            print(
+                f"{run.sequence:>3}  {run.block:<28} {run.arm_id:<24} "
+                f"{run.runner:<13} {run.model}"
+            )
+        for warning in plan.warnings:
+            print(f"warning: {warning}")
+        print("dry run only: no workspaces created, agents launched, or provider calls made")
+        return EXIT_OK
+
+    if args.experiment_verb == "prepare":
+        prepared = prepare_experiment(experiment, args.out)
+        if args.json:
+            print(
+                json.dumps(
+                    prepared.as_dict(), indent=2, sort_keys=True, ensure_ascii=False
+                )
+            )
+            return EXIT_OK
+        print(f"prepared {prepared.plan.plan_id}  ({experiment.name})")
+        print(f"  artifacts: {prepared.root}")
+        print(f"  workspaces: {len(prepared.runs)} ({experiment.isolation.workspace})")
+        print(f"  baseline fingerprint: {prepared.baseline_fingerprint[:12]}")
+        print("  agents launched: 0; provider calls: 0")
+        return EXIT_OK
+
+    raise ExperimentError(f"unknown experiment verb {args.experiment_verb!r}")
+
+
+def _runner_executable_overrides(values: list[str]) -> dict[str, str]:
+    allowed = {"claude-code", "codex-cli", "gemini-cli"}
+    overrides: dict[str, str] = {}
+    for value in values:
+        runner, separator, path = value.partition("=")
+        if not separator or not runner or not path:
+            raise ExperimentError("--executable must use RUNNER=PATH")
+        if runner not in allowed:
+            raise ExperimentError(f"unknown --executable runner {runner!r}")
+        if runner in overrides:
+            raise ExperimentError(f"duplicate --executable override for {runner}")
+        overrides[runner] = path
+    return overrides
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    if args.workflow_verb == "verify":
+        result = verify_workflow(args.root)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"ok: {result['root']} - {result['workflow']} is {result['status']}; "
+                f"{result['instance_count']} instances, {result['artifact_count']} artifacts"
+            )
+        return EXIT_OK
+
+    workflow = load_workflow(args.manifest)
+    plan = workflow_plan(workflow)
+    if args.workflow_verb == "validate":
+        if args.json:
+            print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"ok: {workflow.path} - {len(workflow.nodes)} DAG nodes, "
+                f"{plan['instance_count']} instances, {len(workflow.fixtures)} frozen fixtures; "
+                "commands launched: 0"
+            )
+        return EXIT_OK
+    if args.workflow_verb == "plan":
+        if args.json:
+            print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(f"workflow {workflow.name}  ({workflow.hash[:12]})")
+            print(f"  root: {workflow.root}")
+            print(f"  max parallel: {workflow.max_parallel}")
+            for index, level in enumerate(plan["levels"], 1):
+                print(f"  level {index}: {', '.join(level)}")
+            print(
+                f"  instances: {plan['instance_count']}; frozen fixtures: "
+                f"{len(workflow.fixtures)}; provider nodes: "
+                f"{', '.join(plan['provider_nodes']) or 'none'}"
+            )
+            print("dry run only: no workspace copied and no commands launched")
+        return EXIT_OK
+    if args.workflow_verb == "run":
+        result = run_workflow(
+            workflow,
+            args.out,
+            allow_commands=args.allow_commands,
+            allow_provider_calls=args.allow_provider_calls,
+        )
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"{result.status}: {result.root} - {result.nodes_succeeded}/"
+                f"{result.nodes_total} nodes succeeded, {result.instances} instances; "
+                f"report {result.html}"
+            )
+        return EXIT_OK if result.status == "completed" else EXIT_RUNTIME
+    raise WorkflowError(f"unknown workflow verb {args.workflow_verb!r}")
 
 
 if __name__ == "__main__":  # pragma: no cover
