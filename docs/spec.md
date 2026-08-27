@@ -1696,7 +1696,11 @@ only that run's session identifier.
   --skip-git-repo-check <thread-id>`. `plugins: none`
   maps to `--ignore-user-config`; `plugins: inherit` is supported. Plugin allowlists fail
   closed. One-turn runs add `--ephemeral`; multi-turn runs persist only the fresh thread
-  needed for resume in Codex's provider-owned state.
+  needed for resume in Codex's provider-owned state. Codex's JSONL event stream does not
+  expose model identity. After a multi-turn run, Evalmine locates only the matching UUID
+  rollout below `$CODEX_HOME/sessions`, extracts the runner-recorded model/provider fields,
+  and stores that minimal metadata plus an integrity hash. It never copies the rollout or
+  reads `$CODEX_HOME/auth.json`.
 - **Gemini CLI:** `gemini --prompt '' --output-format stream-json --model ... --sandbox
   --approval-mode auto_edit`; follow-ups use `--resume <session-id>`. `plugins: none` maps
   to `--extensions none`, and allowlists map to repeated `--extensions <name>`. On macOS the
@@ -1732,7 +1736,9 @@ the same credential-pattern scanner used for manifests replaces any key-shaped s
 with `[REDACTED_CREDENTIAL]` before the bytes reach disk. Normalized
 turn evidence includes start/end time, duration, exit code, timeout status, provider event
 types, tool activity, final text, requested model, observed model when emitted, and session
-identifier. The run summary also anchors the final workspace tree hash immediately after
+identifier. The run summary records the identity source and confidence. Codex rollout
+metadata is classified as runner-runtime evidence rather than a raw provider-response
+attestation. The run summary also anchors the final workspace tree hash immediately after
 the agent process ends, so later validation cannot attribute intervening manual edits to
 the agent. Credential values and the child environment are never recorded.
 

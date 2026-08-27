@@ -30,6 +30,8 @@ from .workspace import _path_content_hash, _tree_hash, _write_once, verify_prepa
 
 EXECUTION_FORMAT = "evalmine-execution-v1"
 DEFAULT_TURN_TIMEOUT = 1800
+MAX_CODEX_ROLLOUT_BYTES = 64 * 1024 * 1024
+MAX_CODEX_ROLLOUT_LINE_BYTES = 8 * 1024 * 1024
 
 _RUNNER_COMMANDS = {
     "claude-code": "claude",
@@ -145,6 +147,7 @@ _SECRET_ENV_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _write_lock = threading.Lock()
 _progress_lock = threading.Lock()
 ProgressCallback = Callable[[dict[str, Any]], None]
+CodexIdentityProbe = Callable[[str, Path], dict[str, Any]]
 
 
 class RunnerError(ExperimentError):
@@ -803,6 +806,150 @@ def _first_string(events: list[dict[str, Any]], *keys: str) -> str | None:
     return None
 
 
+def _codex_home(environment: dict[str, str]) -> Path:
+    declared = environment.get("CODEX_HOME")
+    if declared:
+        return Path(declared).expanduser()
+    return Path.home() / ".codex"
+
+
+def _codex_rollout_identity(session_id: str, codex_home: Path) -> dict[str, Any]:
+    """Extract only non-secret model metadata from one persisted Codex session.
+
+    Codex's documented ``exec --json`` stream does not include model identity, while
+    non-ephemeral multi-turn runs persist a rollout for resume. Restrict discovery to
+    the validated session UUID below ``$CODEX_HOME/sessions`` and retain only model,
+    provider, record type, and integrity metadata. Raw rollout content is never copied.
+    """
+    try:
+        canonical_session_id = str(uuid.UUID(session_id))
+    except (ValueError, AttributeError):
+        return {
+            "status": "unavailable",
+            "source": "codex-session-rollout",
+            "reason": "session-id-is-not-a-uuid",
+        }
+
+    sessions = codex_home / "sessions"
+    try:
+        if sessions.is_symlink():
+            raise OSError("sessions root is a symlink")
+        sessions_root = sessions.resolve(strict=True)
+        if not sessions_root.is_dir():
+            raise OSError("sessions root is not a directory")
+        matches = [
+            path
+            for path in sessions_root.rglob(f"*{canonical_session_id}.jsonl")
+            if path.is_file() and not path.is_symlink()
+        ]
+    except OSError:
+        return {
+            "status": "unavailable",
+            "source": "codex-session-rollout",
+            "reason": "sessions-unavailable",
+        }
+    if not matches:
+        return {
+            "status": "unavailable",
+            "source": "codex-session-rollout",
+            "reason": "rollout-not-found",
+        }
+    if len(matches) != 1:
+        return {
+            "status": "unavailable",
+            "source": "codex-session-rollout",
+            "reason": "rollout-ambiguous",
+        }
+
+    rollout = matches[0]
+    try:
+        rollout.relative_to(sessions_root)
+        if rollout.stat().st_size > MAX_CODEX_ROLLOUT_BYTES:
+            raise OSError("rollout exceeds the metadata-reader limit")
+        digest = hashlib.sha256()
+        records: list[dict[str, str]] = []
+        parse_errors = 0
+        with rollout.open("rb") as handle:
+            for raw_line in handle:
+                digest.update(raw_line)
+                if len(raw_line) > MAX_CODEX_ROLLOUT_LINE_BYTES:
+                    raise OSError("rollout line exceeds the metadata-reader limit")
+                try:
+                    event = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    parse_errors += 1
+                    continue
+                if not isinstance(event, dict) or not isinstance(event.get("payload"), dict):
+                    continue
+                event_type = event.get("type")
+                payload = event["payload"]
+                model: Any = None
+                provider: Any = None
+                record_type: str | None = None
+                if event_type == "session_meta":
+                    recorded_id = payload.get("id") or payload.get("session_id")
+                    if recorded_id != canonical_session_id:
+                        continue
+                    base_instructions = payload.get("base_instructions", {})
+                    provenance = (
+                        base_instructions.get("provenance", {})
+                        if isinstance(base_instructions, dict)
+                        else {}
+                    )
+                    if isinstance(provenance, dict) and provenance.get("type") == "model":
+                        model = provenance.get("model")
+                    provider = payload.get("model_provider")
+                    record_type = "session_meta"
+                elif event_type == "turn_context":
+                    model = payload.get("model")
+                    record_type = "turn_context"
+                elif event_type == "event_msg" and payload.get("type") == (
+                    "thread_settings_applied"
+                ):
+                    settings = payload.get("thread_settings", {})
+                    if isinstance(settings, dict):
+                        model = settings.get("model")
+                        provider = settings.get("model_provider_id")
+                    record_type = "thread_settings_applied"
+                if record_type is None or not isinstance(model, str) or not model:
+                    continue
+                record = {"record": record_type, "model": model}
+                if isinstance(provider, str) and provider:
+                    record["provider"] = provider
+                records.append(record)
+    except (OSError, ValueError):
+        return {
+            "status": "unavailable",
+            "source": "codex-session-rollout",
+            "reason": "rollout-unreadable",
+        }
+
+    models = sorted({record["model"] for record in records})
+    providers = sorted(
+        {record["provider"] for record in records if record.get("provider")}
+    )
+    result: dict[str, Any] = {
+        "status": "recorded" if len(models) == 1 else "conflicting" if models else "unavailable",
+        "source": "codex-session-rollout",
+        "confidence": "runner-runtime" if len(models) == 1 else "unavailable",
+        "records": records,
+        "models": models,
+        "providers": providers,
+        "record_count": len(records),
+        "parse_error_count": parse_errors,
+        "rollout_sha256": digest.hexdigest(),
+    }
+    if len(models) == 1:
+        result["observed_model"] = models[0]
+    elif not models:
+        result["reason"] = "model-metadata-not-found"
+    else:
+        result["reason"] = "multiple-runtime-models-recorded"
+    if len(providers) == 1:
+        result["observed_provider"] = providers[0]
+    return result
+
+
 def _normalize_events(
     runner: str, events: list[dict[str, Any]]
 ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]], dict[str, Any]]:
@@ -1005,6 +1152,7 @@ def _run_one(
     run_position: int,
     run_count: int,
     progress: ProgressCallback | None,
+    codex_identity_probe: CodexIdentityProbe,
 ) -> dict[str, Any]:
     source_dir = root / "runs" / run_key
     run = _read_json(source_dir / "run.json")
@@ -1027,6 +1175,8 @@ def _run_one(
     status = "succeeded"
     error: str | None = None
     observed_model: str | None = None
+    observed_model_source: str | None = None
+    codex_home: Path | None = None
     progress_context = {
         "run_position": run_position,
         "run_count": run_count,
@@ -1075,6 +1225,8 @@ def _run_one(
                 settings_path=settings_path,
                 credential_env_names=credential_env_names,
             )
+            if runner == "codex-cli":
+                codex_home = _codex_home(env)
             turn_started = _now()
             _emit_progress(
                 progress,
@@ -1106,7 +1258,9 @@ def _run_one(
             elif session_id != found_session:
                 status = "failed"
                 error = "runner changed session id within one planned run"
-        observed_model = observed_model or found_model
+        if observed_model is None and found_model is not None:
+            observed_model = found_model
+            observed_model_source = "runner-jsonl"
         final = _redact_secrets(final or "")
         turn_ok = (
             process.returncode == 0
@@ -1177,6 +1331,30 @@ def _run_one(
         "local": "local",
         "inherited": "unknown",
     }.get(run["auth"], "unknown")
+    model_identity: dict[str, Any] = {
+        "status": "recorded" if observed_model is not None else "unavailable",
+        "source": observed_model_source,
+        "confidence": "runner-reported" if observed_model is not None else "requested-only",
+        "requested_model": run["model"],
+        "observed_model": observed_model,
+    }
+    if runner == "codex-cli" and session_id is not None and observed_model is None:
+        runtime_identity = codex_identity_probe(
+            session_id,
+            codex_home or _codex_home(dict(os.environ)),
+        )
+        runtime_model = runtime_identity.get("observed_model")
+        if isinstance(runtime_model, str) and runtime_model:
+            observed_model = runtime_model
+            observed_model_source = str(runtime_identity.get("source"))
+        model_identity = {
+            **runtime_identity,
+            "requested_model": run["model"],
+            "observed_model": observed_model,
+        }
+    model_identity["matches_requested"] = (
+        observed_model == run["model"] if observed_model is not None else None
+    )
     run_summary = {
         "format": EXECUTION_FORMAT,
         "run_key": run_key,
@@ -1185,6 +1363,8 @@ def _run_one(
         "runner": runner,
         "requested_model": run["model"],
         "observed_model": observed_model,
+        "observed_model_source": observed_model_source,
+        "model_identity": model_identity,
         "auth": run["auth"],
         "session_id": session_id,
         "requested_session_id": requested_session,
@@ -1222,6 +1402,7 @@ def execute_experiment(
     executable_overrides: dict[str, str] | None = None,
     driver: ProcessDriver | None = None,
     progress: ProgressCallback | None = None,
+    codex_identity_probe: CodexIdentityProbe | None = None,
 ) -> ExecutionResult:
     """Execute every prepared run after a fresh fail-closed preflight."""
     if not allow_provider_calls:
@@ -1232,6 +1413,7 @@ def execute_experiment(
     if turn_timeout < 1:
         raise ExecutionRefused("--turn-timeout must be at least 1 second")
     driver = driver or ProcessDriver()
+    codex_identity_probe = codex_identity_probe or _codex_rollout_identity
     preflight = preflight_experiment(
         root, executable_overrides=executable_overrides, driver=driver
     )
@@ -1333,6 +1515,7 @@ def execute_experiment(
                     run_position=run_position,
                     run_count=len(execute_run_keys),
                     progress=progress,
+                    codex_identity_probe=codex_identity_probe,
                 )
                 futures[future] = (run_key, run_position, run)
             for future in as_completed(futures):

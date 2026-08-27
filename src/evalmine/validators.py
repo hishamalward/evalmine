@@ -320,7 +320,12 @@ def _repository_diff(
     current: dict[str, dict[str, Any]],
     output_dir: Path,
 ) -> dict[str, Any]:
-    changes = _filter_changes(_changed_paths(baseline, current), spec)
+    all_changes = _changed_paths(baseline, current)
+    changes = _filter_changes(all_changes, spec)
+    included_paths = {change["path"] for change in changes}
+    filtered_changes = [
+        change for change in all_changes if change["path"] not in included_paths
+    ]
     patch, omitted, truncated = _render_patch(root, workspace, baseline, current, changes)
     _write_evidence(output_dir / f"{validator_id}.patch", patch.encode("utf-8"))
     expect = spec["expect"]
@@ -335,6 +340,8 @@ def _repository_diff(
         "expect": expect,
         "changed_file_count": len(changes),
         "changes": changes,
+        "filtered_changed_file_count": len(filtered_changes),
+        "filtered_changes": filtered_changes,
         "patch": f"{validator_id}.patch",
         "patch_sha256": hashlib.sha256(patch.encode("utf-8")).hexdigest(),
         "patch_truncated": truncated,

@@ -63,7 +63,10 @@ the baseline repository is unchanged.
 For Codex, the intended automation surface is `codex exec`: the official reference
 documents it as the stable non-interactive command, with JSONL output, model and
 sandbox overrides, fresh ephemeral sessions, user-config isolation, and explicit
-session resume for follow-ups. Authentication remains outside manifests.
+session resume for follow-ups. Because the JSONL event stream omits the selected model,
+multi-turn runs extract only model/provider fields from the matching UUID rollout under
+`$CODEX_HOME/sessions`; raw rollout content and authentication files remain outside
+Evalmine evidence. Authentication remains outside manifests.
 
 API-auth Claude arms require and receive a native per-run USD ceiling. External-write
 allowlists require absolute non-broad directories, a second operator acknowledgement,

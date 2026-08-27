@@ -240,6 +240,7 @@ validators:
     type: repository-diff
     expect: changed
     include: ["src/**", "tests/**"]
+    exclude: ["**/__pycache__/**", "**/*.py[cod]"]
     max_changed_files: 20
   tests:
     type: command
@@ -256,7 +257,13 @@ validators:
 
 The repository diff compares against an immutable treated pre-agent snapshot, so it
 works in copy workspaces without `.git` and does not mistake an instruction treatment
-for agent work. Execution anchors the final workspace tree; `check` refuses to
+for agent work. `include` and `exclude` define the verdict scope; filtered changes
+remain visible in validation evidence instead of disappearing. This lets an experiment
+distinguish tracked/source work from declared runtime artifacts such as pytest and Python
+caches. Required-section strings are case-insensitive literal substrings by default, so
+prompts that depend on headings should require those headings exactly.
+
+Execution anchors the final workspace tree; `check` refuses to
 attribute a later manual edit to the agent. Built-in checks freeze that state before commands run. Test/lint
 commands require a second acknowledgement because they are arbitrary local processes:
 

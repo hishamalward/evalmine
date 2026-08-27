@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ from evalmine.runner import (
     ProcessDriver,
     ProcessResult,
     RunnerError,
+    _codex_rollout_identity,
     execute_experiment,
     preflight_experiment,
     verify_execution,
@@ -229,11 +231,15 @@ class FakeDriver(ProcessDriver):
         fail_runner: str | None = None,
         emit_secret_runner: str | None = None,
         mutate_runner: str | None = None,
+        cache_runner: str | None = None,
+        emit_codex_model: bool = True,
     ):
         self.calls: list[dict[str, Any]] = []
         self.fail_runner = fail_runner
         self.emit_secret_runner = emit_secret_runner
         self.mutate_runner = mutate_runner
+        self.cache_runner = cache_runner
+        self.emit_codex_model = emit_codex_model
         self._lock = threading.Lock()
 
     def run(self, args, *, cwd, input_text=None, timeout, env=None):
@@ -259,6 +265,13 @@ class FakeDriver(ProcessDriver):
             (cwd / "README.md").write_text(
                 "runner fixture\nagent changed this\n", encoding="utf-8"
             )
+        if self.cache_runner == runner:
+            pytest_cache = cwd / ".pytest_cache" / "v" / "cache"
+            pytest_cache.mkdir(parents=True, exist_ok=True)
+            (pytest_cache / "nodeids").write_text("[]\n", encoding="utf-8")
+            pycache = cwd / "src" / "evalmine" / "__pycache__"
+            pycache.mkdir(parents=True, exist_ok=True)
+            (pycache / "runner.cpython-310.pyc").write_bytes(b"fake bytecode")
 
         model = args[args.index("--model") + 1]
         run_key = cwd.parent.name
@@ -292,17 +305,17 @@ class FakeDriver(ProcessDriver):
             events = []
             if "resume" not in args:
                 events.append({"type": "thread.started", "thread_id": session_id})
-            events.append(
-                {
-                    "type": "item.completed",
-                    "item": {
-                        "id": "item-1",
-                        "type": "agent_message",
-                        "text": f"codex final for {final_suffix}",
-                    },
-                    "model": model,
-                }
-            )
+            final_event = {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-1",
+                    "type": "agent_message",
+                    "text": f"codex final for {final_suffix}",
+                },
+            }
+            if self.emit_codex_model:
+                final_event["model"] = model
+            events.append(final_event)
         else:
             if "--resume" in args:
                 session_id = args[args.index("--resume") + 1]
@@ -399,6 +412,97 @@ def test_execute_maps_three_clis_reuses_only_run_local_sessions_and_writes_evide
         assert (run_dir / "turn-002.final.txt").read_text(encoding="utf-8")
         turn = json.loads((run_dir / "turn-001.json").read_text(encoding="utf-8"))
         assert turn["command"][-1] == "<PROMPT_VIA_STDIN>"
+
+
+def test_codex_runtime_identity_fills_the_jsonl_model_gap(
+    runner_experiment, fake_executables
+):
+    prepared, _, _ = runner_experiment
+    calls: list[tuple[str, Path]] = []
+
+    def probe(session_id: str, codex_home: Path) -> dict[str, Any]:
+        calls.append((session_id, codex_home))
+        return {
+            "status": "recorded",
+            "source": "codex-session-rollout",
+            "confidence": "runner-runtime",
+            "observed_model": "codex-test",
+            "observed_provider": "openai",
+            "models": ["codex-test"],
+            "providers": ["openai"],
+            "records": [{"record": "turn_context", "model": "codex-test"}],
+            "record_count": 1,
+            "parse_error_count": 0,
+            "rollout_sha256": "a" * 64,
+        }
+
+    result = execute_experiment(
+        prepared.root,
+        allow_provider_calls=True,
+        executable_overrides=fake_executables,
+        driver=FakeDriver(emit_codex_model=False),
+        codex_identity_probe=probe,
+    )
+    codex_run = next(run for run in prepared.runs if run.arm_id == "codex")
+    summary = json.loads(
+        (result.root / "runs" / codex_run.run_key / "run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(calls) == 1
+    assert summary["observed_model"] == "codex-test"
+    assert summary["observed_model_source"] == "codex-session-rollout"
+    assert summary["model_identity"]["confidence"] == "runner-runtime"
+    assert summary["model_identity"]["matches_requested"] is True
+
+
+def test_codex_rollout_identity_keeps_only_model_metadata(tmp_path: Path):
+    session_id = str(uuid.uuid4())
+    codex_home = tmp_path / "codex-home"
+    rollout_dir = codex_home / "sessions" / "2026" / "08" / "26"
+    rollout_dir.mkdir(parents=True)
+    rollout = rollout_dir / f"rollout-2026-08-26T12-00-00-{session_id}.jsonl"
+    events = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "model_provider": "openai",
+                "base_instructions": {
+                    "provenance": {"type": "model", "model": "gpt-5.6-sol"}
+                },
+                "private": "sk-" + "Z" * 24,
+            },
+        },
+        {
+            "type": "turn_context",
+            "payload": {"model": "gpt-5.6-sol", "prompt": "private prompt"},
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "thread_settings_applied",
+                "thread_settings": {
+                    "model": "gpt-5.6-sol",
+                    "model_provider_id": "openai",
+                },
+            },
+        },
+    ]
+    rollout.write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+
+    identity = _codex_rollout_identity(session_id, codex_home)
+    assert identity["status"] == "recorded"
+    assert identity["confidence"] == "runner-runtime"
+    assert identity["observed_model"] == "gpt-5.6-sol"
+    assert identity["observed_provider"] == "openai"
+    assert identity["record_count"] == 3
+    assert identity["parse_error_count"] == 0
+    assert len(identity["rollout_sha256"]) == 64
+    assert "private prompt" not in json.dumps(identity)
+    assert "sk-" + "Z" * 24 not in json.dumps(identity)
 
 
 def test_partial_runner_failure_keeps_evidence_and_returns_partial(
@@ -718,6 +822,52 @@ def test_repository_diff_uses_the_treated_baseline_and_failed_checks_remain_evid
     )
     assert " runner fixture" in patch
     assert "+agent changed this" in patch
+
+
+def test_repository_diff_reports_but_ignores_declared_runtime_caches(
+    runner_experiment, fake_executables
+):
+    original, manifest, doc = runner_experiment
+    doc["experiment"] = "runner-cache-validator-test"
+    doc["validators"]["repo-unchanged"]["exclude"] = [
+        ".pytest_cache/**",
+        "**/.pytest_cache/**",
+        "__pycache__/**",
+        "**/__pycache__/**",
+        "*.py[cod]",
+        "**/*.py[cod]",
+    ]
+    manifest.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    prepared = prepare_experiment(
+        load_experiment(manifest), original.root.parent.parent / "cache-artifacts"
+    )
+    try:
+        execute_experiment(
+            prepared.root,
+            allow_provider_calls=True,
+            executable_overrides=fake_executables,
+            driver=FakeDriver(cache_runner="claude-code"),
+        )
+        result = check_experiment(prepared.root)
+        assert result.verdict == "passed"
+        claude_run = next(run for run in prepared.runs if run.arm_id == "claude")
+        diff = json.loads(
+            (
+                result.root
+                / "runs"
+                / claude_run.run_key
+                / "repo-unchanged.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert diff["status"] == "passed"
+        assert diff["changed_file_count"] == 0
+        assert diff["filtered_changed_file_count"] == 2
+        assert {item["path"] for item in diff["filtered_changes"]} == {
+            ".pytest_cache/v/cache/nodeids",
+            "src/evalmine/__pycache__/runner.cpython-310.pyc",
+        }
+    finally:
+        discard_prepared(prepared.root)
 
 
 def test_check_refuses_to_attribute_workspace_edits_made_after_execution(

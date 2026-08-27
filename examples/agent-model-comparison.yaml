@@ -21,6 +21,13 @@ validators:
   repo-unchanged:
     type: repository-diff
     expect: unchanged
+    exclude:
+      - .pytest_cache/**
+      - "**/.pytest_cache/**"
+      - __pycache__/**
+      - "**/__pycache__/**"
+      - "*.py[cod]"
+      - "**/*.py[cod]"
   required-sections:
     type: required-sections
     target: final-response
@@ -63,6 +70,8 @@ episodes:
           Now challenge your own recommendation. Identify the strongest reason to keep
           the current architecture, the largest uncontrolled variable in your proposed
           experiment, and the smallest implementation slice that proves the design.
+          Use exactly these Markdown headings: "Strongest reason to keep",
+          "Largest uncontrolled variable", and "Smallest implementation slice".
     validators: [repo-unchanged, required-sections]
     repeats: 1
 

@@ -167,6 +167,8 @@ def _run_view(root: Path, planned: dict[str, Any], validation_exists: bool) -> d
         "runner": run["runner"],
         "requested_model": execution.get("requested_model", run["model"]),
         "observed_model": execution.get("observed_model"),
+        "observed_model_source": execution.get("observed_model_source"),
+        "model_identity": execution.get("model_identity", {}),
         "auth": run["auth"],
         "treatment": treatment,
         "execution_status": execution.get("status"),
@@ -304,13 +306,20 @@ def _validator_html(result: dict[str, Any]) -> str:
     body = ""
     if kind == "repository-diff":
         changes = result.get("changes", [])
+        filtered = result.get("filtered_changes", [])
         names = "".join(
             f"<li><code>{_esc(item['path'])}</code> · {_esc(item['change'])}</li>"
             for item in changes
         )
+        filtered_names = "".join(
+            f"<li><code>{_esc(item['path'])}</code> · {_esc(item['change'])}</li>"
+            for item in filtered
+        )
         body = (
             f"<p>{len(changes)} changed file(s); patch omissions "
             f"{len(result.get('patch_omissions', []))}.</p><ul>{names}</ul>"
+            f"<p>{len(filtered)} change(s) filtered by the declared validator scope.</p>"
+            f"<ul>{filtered_names}</ul>"
             f"<pre>{_esc(result.get('patch_text', ''))}</pre>"
         )
     elif kind in {"required-files", "required-sections"}:
@@ -351,7 +360,10 @@ def _outcome_html(label: str, run: dict[str, Any]) -> str:
     )
     identity = (
         f'<div class="identity"><b>{_esc(run["arm"])}</b><br>'
-        f"<code>{_esc(run['runner'])}</code> · <code>{_esc(run['requested_model'])}</code>"
+        f"<code>{_esc(run['runner'])}</code> · requested "
+        f"<code>{_esc(run['requested_model'])}</code> · observed "
+        f"<code>{_esc(run.get('observed_model') or 'unavailable')}</code>"
+        f" ({_esc(run.get('model_identity', {}).get('confidence') or 'unavailable')})"
         f"<br>instructions={_esc(run['treatment'].get('instructions'))} · "
         f"plugins={_esc(run['treatment'].get('plugins'))}</div>"
     )
