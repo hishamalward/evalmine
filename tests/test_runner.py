@@ -1029,6 +1029,8 @@ def test_episode_report_is_self_contained_blind_and_maps_every_label_to_the_visi
     assert "First private fake prompt." in html
     assert "Subscription · per-run dollar cost unavailable" in html
     assert "not-applicable-subscription" not in html
+    assert "Judge workflow:" in html
+    assert "judge verdicts are intentionally absent" in html
 
     blob = html.split('<script type="application/json" id="evalmine-episode-data">')[1]
     blob = blob.split("</script>")[0]

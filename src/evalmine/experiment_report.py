@@ -16,6 +16,7 @@ from statistics import median
 from typing import Any
 
 from .experiment import ExperimentError
+from .prices import PriceRow, PriceTable, PriceTableError, UnknownModelError, load_price_table
 from .runner import RunnerError, verify_execution
 from .validators import ValidationError, verify_validation
 from .workspace import PreparationError, verify_prepared
@@ -130,6 +131,227 @@ def _json_blob(value: dict[str, Any]) -> str:
     return text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
+def _number(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _duration_text(duration_ms: Any) -> str:
+    """Human display for a raw millisecond measurement retained in report data."""
+    value = _number(duration_ms)
+    if value is None:
+        return "duration unavailable"
+    milliseconds = max(0, round(value))
+    if milliseconds < 1_000:
+        return f"{milliseconds} ms"
+    seconds = round(milliseconds / 1_000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
+def _price_model_id(runner: str, model: str, table: PriceTable) -> str:
+    if model in table.rows:
+        return model
+    provider = {
+        "claude-code": "anthropic",
+        "codex-cli": "openai",
+        "gemini-cli": "google",
+    }.get(runner)
+    return f"{provider}/{model}" if provider else model
+
+
+def _cost_component(tokens: float, rate: float, multiplier: float = 1.0) -> float:
+    return tokens / 1_000_000 * rate * multiplier
+
+
+def _estimate_anthropic_api_equivalent(
+    run: dict[str, Any], row: PriceRow
+) -> tuple[dict[str, float], list[str]] | None:
+    if row.cache_write_5m_per_mtok is None or row.cache_write_1h_per_mtok is None:
+        return None
+    components = {
+        "uncached_input": 0.0,
+        "cache_write_5m": 0.0,
+        "cache_write_1h": 0.0,
+        "cache_read": 0.0,
+        "output": 0.0,
+    }
+    saw_usage = False
+    inference_geographies: set[str] = set()
+    for turn in run.get("turns", []):
+        usage = turn.get("usage", {})
+        input_tokens = _number(usage.get("input_tokens"))
+        output_tokens = _number(usage.get("output_tokens"))
+        if input_tokens is None or output_tokens is None:
+            continue
+        saw_usage = True
+        cache_read = _number(usage.get("cache_read_input_tokens")) or 0.0
+        cache_created = _number(usage.get("cache_creation_input_tokens")) or 0.0
+        cache_creation = usage.get("cache_creation", {})
+        if not isinstance(cache_creation, dict):
+            return None
+        cache_5m = _number(cache_creation.get("ephemeral_5m_input_tokens")) or 0.0
+        cache_1h = _number(cache_creation.get("ephemeral_1h_input_tokens")) or 0.0
+        if abs(cache_created - cache_5m - cache_1h) > 0.5:
+            return None
+        geography = usage.get("inference_geo")
+        if isinstance(geography, str):
+            inference_geographies.add(geography)
+        components["uncached_input"] += _cost_component(input_tokens, row.input_per_mtok)
+        components["cache_write_5m"] += _cost_component(
+            cache_5m, row.cache_write_5m_per_mtok
+        )
+        components["cache_write_1h"] += _cost_component(
+            cache_1h, row.cache_write_1h_per_mtok
+        )
+        components["cache_read"] += _cost_component(cache_read, row.cached_input_per_mtok)
+        components["output"] += _cost_component(output_tokens, row.output_per_mtok)
+    if not saw_usage:
+        return None
+    assumptions = [
+        "Standard/global first-party API rates; subscription billing is not usage-metered.",
+        "Output token counts already include any reported thinking tokens.",
+    ]
+    if inference_geographies:
+        assumptions.append(
+            "Runner inference geography: " + ", ".join(sorted(inference_geographies)) + "."
+        )
+    return components, assumptions
+
+
+def _estimate_openai_api_equivalent(
+    run: dict[str, Any], row: PriceRow
+) -> tuple[dict[str, float], list[str]] | None:
+    components = {
+        "uncached_input": 0.0,
+        "cached_input": 0.0,
+        "cache_write": 0.0,
+        "output": 0.0,
+    }
+    saw_usage = False
+    long_context_turns = 0
+    reasoning_reported = False
+    for turn in run.get("turns", []):
+        usage = turn.get("usage", {})
+        input_tokens = _number(usage.get("input_tokens"))
+        output_tokens = _number(usage.get("output_tokens"))
+        if input_tokens is None or output_tokens is None:
+            continue
+        saw_usage = True
+        cached = _number(usage.get("cached_input_tokens")) or 0.0
+        cache_write = _number(usage.get("cache_write_input_tokens")) or 0.0
+        if cached > input_tokens or cache_write < 0:
+            return None
+        if cache_write and row.cache_write_5m_per_mtok is None:
+            return None
+        uncached = input_tokens - cached
+        input_multiplier = 1.0
+        output_multiplier = 1.0
+        if (
+            row.long_context_threshold_tokens is not None
+            and input_tokens > row.long_context_threshold_tokens
+        ):
+            long_context_turns += 1
+            input_multiplier = row.long_context_input_multiplier
+            output_multiplier = row.long_context_output_multiplier
+        components["uncached_input"] += _cost_component(
+            uncached, row.input_per_mtok, input_multiplier
+        )
+        components["cached_input"] += _cost_component(
+            cached, row.cached_input_per_mtok, input_multiplier
+        )
+        components["cache_write"] += _cost_component(
+            cache_write, row.cache_write_5m_per_mtok or 0.0, input_multiplier
+        )
+        components["output"] += _cost_component(
+            output_tokens, row.output_per_mtok, output_multiplier
+        )
+        reasoning_reported = reasoning_reported or bool(
+            _number(usage.get("reasoning_output_tokens"))
+        )
+    if not saw_usage:
+        return None
+    assumptions = [
+        "Reported input tokens include cached input; uncached input is their difference.",
+        "Subscription billing is not usage-metered.",
+    ]
+    if long_context_turns:
+        assumptions.append(
+            f"Published long-context multipliers applied to {long_context_turns} runner "
+            "turn(s), including both cached and uncached input."
+        )
+    if reasoning_reported:
+        assumptions.append("Reasoning output tokens are a subset of output, not added twice.")
+    return components, assumptions
+
+
+def _api_list_price_equivalent(
+    run: dict[str, Any], table: PriceTable | None
+) -> dict[str, Any]:
+    if run.get("billing", {}).get("basis") != "subscription":
+        return {"status": "not-applicable"}
+    if table is None:
+        return {"status": "unavailable", "reason": "price-table-unavailable"}
+    price_model = _price_model_id(
+        str(run.get("runner", "")), str(run.get("requested_model", "")), table
+    )
+    try:
+        row = table.get(price_model)
+    except UnknownModelError:
+        return {
+            "status": "unavailable",
+            "reason": "unknown-price-row",
+            "model": price_model,
+            "price_table": table.filename,
+        }
+    if price_model.startswith("anthropic/"):
+        estimate = _estimate_anthropic_api_equivalent(run, row)
+    elif price_model.startswith("openai/"):
+        estimate = _estimate_openai_api_equivalent(run, row)
+    else:
+        estimate = None
+    if estimate is None:
+        return {
+            "status": "unavailable",
+            "reason": "usage-breakdown-insufficient",
+            "model": price_model,
+            "price_table": table.filename,
+        }
+    components, assumptions = estimate
+    usd = sum(components.values())
+    meter_equivalent = _number(run.get("billing", {}).get("meter_equivalent_usd"))
+    return {
+        "status": "estimated",
+        "usd": usd,
+        "currency": table.currency,
+        "basis": "reported token usage multiplied by pinned API list prices; not a subscription charge",
+        "model": price_model,
+        "price_table": table.filename,
+        "price_table_pinned": table.pinned,
+        "source": row.source,
+        "read_on": row.read_on,
+        "components_usd": components,
+        "rates_per_mtok": {
+            "input": row.input_per_mtok,
+            "cached_input": row.cached_input_per_mtok,
+            "cache_write_5m": row.cache_write_5m_per_mtok,
+            "cache_write_1h": row.cache_write_1h_per_mtok,
+            "output": row.output_per_mtok,
+        },
+        "runner_meter_equivalent_usd": meter_equivalent,
+        "runner_meter_equivalent_delta_usd": (
+            usd - meter_equivalent if meter_equivalent is not None else None
+        ),
+        "assumptions": assumptions,
+    }
+
+
 def _load_validator_results(validation_dir: Path | None) -> tuple[dict[str, Any] | None, list]:
     if validation_dir is None or not validation_dir.is_dir():
         return None, []
@@ -188,6 +410,7 @@ def _run_view(
     planned: dict[str, Any],
     validation_exists: bool,
     prompts_by_episode: dict[str, list[str]],
+    price_table: PriceTable | None,
 ) -> dict[str, Any]:
     run_key = planned["run_key"]
     prepared_dir = root / "runs" / run_key
@@ -208,7 +431,7 @@ def _run_view(
     validation_dir = root / "validation" / "runs" / run_key if validation_exists else None
     validation, validators = _load_validator_results(validation_dir)
     final = turns[-1]["final"] if turns else ""
-    return {
+    view = {
         "run_key": run_key,
         "sequence": run["sequence"],
         "block": run["block"],
@@ -239,6 +462,11 @@ def _run_view(
         "validators": validators,
         "validation_verdict": validation.get("verdict") if validation else "not-run",
     }
+    view["billing"] = dict(view["billing"])
+    view["billing"]["api_list_price_equivalent"] = _api_list_price_equivalent(
+        view, price_table
+    )
+    return view
 
 
 def _pair_views(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -353,6 +581,7 @@ def build_experiment_report_data(
     *,
     generated_at: str | None = None,
     ranking_style: str | None = None,
+    prices_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build the serializable report view after verifying its source envelopes."""
     try:
@@ -369,11 +598,35 @@ def build_experiment_report_data(
         except ValidationError as exc:
             raise ExperimentReportError(str(exc)) from exc
     plan = _read_json(resolved / "plan.json")
+    price_table: PriceTable | None = None
+    pricing: dict[str, Any]
+    try:
+        price_table = load_price_table(prices_path)
+        pricing = {
+            "status": "loaded",
+            "price_table": price_table.filename,
+            "pinned": price_table.pinned,
+            "currency": price_table.currency,
+            "verified": price_table.verified,
+            "sha256": _file_hash(price_table.path),
+        }
+    except PriceTableError as exc:
+        pricing = {"status": "unavailable", "reason": str(exc)}
     episodes, prompts_by_episode = _episode_prompts(resolved, plan)
     runs = [
-        _run_view(resolved, planned, validation_exists, prompts_by_episode)
+        _run_view(resolved, planned, validation_exists, prompts_by_episode, price_table)
         for planned in plan["runs"]
     ]
+    estimated_prices = [
+        run["billing"]["api_list_price_equivalent"]
+        for run in runs
+        if run["billing"]["api_list_price_equivalent"].get("status") == "estimated"
+    ]
+    pricing["estimated_run_count"] = len(estimated_prices)
+    pricing["run_count"] = len(runs)
+    pricing["api_list_price_equivalent_total_usd"] = sum(
+        float(estimate["usd"]) for estimate in estimated_prices
+    )
     pairs = _pair_views(runs)
     rankings = _ranking_views(runs)
     planned_ranking_style = str(plan["evaluation"].get("ranking_style", "pairwise"))
@@ -398,6 +651,7 @@ def build_experiment_report_data(
         "planned_ranking_style": planned_ranking_style,
         "ranking_style_source": "operator-override" if ranking_style else "plan",
         "episodes": episodes,
+        "pricing": pricing,
         "verification": {
             "preparation": prepared_verification,
             "execution": execution_verification,
@@ -434,12 +688,56 @@ def _billing_text(run: dict[str, Any]) -> str:
     basis = billing.get("basis")
     cost = billing.get("reported_cost_usd")
     if basis == "subscription":
+        estimate = billing.get("api_list_price_equivalent", {})
+        if estimate.get("status") == "estimated":
+            return "Subscription"
         return "Subscription · per-run dollar cost unavailable"
     if basis == "api-metered" and isinstance(cost, (int, float)):
         return f"API metered · ${cost:.4f} reported"
     if basis == "local":
         return "Local execution · no provider charge"
     return "Per-run dollar cost unavailable"
+
+
+def _pricing_details_html(run: dict[str, Any]) -> str:
+    estimate = run.get("billing", {}).get("api_list_price_equivalent", {})
+    if estimate.get("status") != "estimated":
+        return ""
+    components = "".join(
+        f"<li>{_esc(name.replace('_', ' '))}: ${float(value):.4f}</li>"
+        for name, value in estimate.get("components_usd", {}).items()
+        if float(value) != 0.0
+    )
+    assumptions = "".join(
+        f"<li>{_esc(item)}</li>" for item in estimate.get("assumptions", [])
+    )
+    meter = estimate.get("runner_meter_equivalent_usd")
+    meter_note = (
+        f"<p>Runner meter-equivalent: ${float(meter):.4f}.</p>"
+        if isinstance(meter, (int, float))
+        else ""
+    )
+    return (
+        '<details class="pricing identity"><summary>'
+        f"API list-price equivalent ≈ ${float(estimate['usd']):.2f}</summary>"
+        f"<p>This is not the subscription charge. It is reported token usage multiplied "
+        f"by {_esc(estimate.get('price_table'))}, pinned {_esc(estimate.get('price_table_pinned'))}."
+        f"</p><ul>{components}</ul>{meter_note}<ul>{assumptions}</ul></details>"
+    )
+
+
+def _pricing_summary_html(report: dict[str, Any]) -> str:
+    pricing = report.get("pricing", {})
+    estimated = pricing.get("estimated_run_count")
+    total = pricing.get("api_list_price_equivalent_total_usd")
+    if not isinstance(estimated, int) or not isinstance(total, (int, float)) or not estimated:
+        return ""
+    return (
+        '<div class="notice identity"><b>Pricing estimate:</b> '
+        f"API list-price equivalent ≈ ${float(total):.2f} across {estimated}/"
+        f"{_esc(pricing.get('run_count'))} runs. This is not the subscription charge; "
+        f"per-run token and cache breakdowns appear with each revealed outcome.</div>"
+    )
 
 
 def _validator_html(result: dict[str, Any]) -> str:
@@ -476,7 +774,7 @@ def _validator_html(result: dict[str, Any]) -> str:
     elif kind == "command":
         body = (
             f"<p><code>{_esc(' '.join(result.get('argv', [])))}</code> · exit "
-            f"{_esc(result.get('exit_code'))} · {_esc(result.get('duration_ms'))} ms</p>"
+            f"{_esc(result.get('exit_code'))} · {_esc(_duration_text(result.get('duration_ms')))}</p>"
             f"<pre>{_esc(result.get('stdout_text', ''))}</pre>"
             f'<pre class="stderr">{_esc(result.get("stderr_text", ""))}</pre>'
         )
@@ -489,7 +787,7 @@ def _validator_html(result: dict[str, Any]) -> str:
 def _outcome_html(label: str, run: dict[str, Any]) -> str:
     turns = "".join(
         f"<details><summary>Turn {_esc(turn['turn'])} · {_status(turn['status'])} · "
-        f"{_esc(turn.get('duration_ms'))} ms · {len(turn.get('tools', []))} tools</summary>"
+        f"{_esc(_duration_text(turn.get('duration_ms')))} · {len(turn.get('tools', []))} tools</summary>"
         f"<h5>Prompt</h5><pre class=\"prompt\">{_esc(turn.get('prompt', ''))}</pre>"
         f"<h5>Response</h5><pre>{_esc(turn.get('final', ''))}</pre></details>"
         for turn in run["turns"]
@@ -514,7 +812,8 @@ def _outcome_html(label: str, run: dict[str, Any]) -> str:
         <header><div><span class="outcome-letter">Outcome {_esc(label)}</span>{identity}</div>
           <div>{_status(run["execution_status"])} {_objective_check_status(run)}</div></header>
         {error}
-        <div class="metrics"><span>{_esc(run["duration_ms"])} ms</span><span>{_esc(run["tool_count"])} tools</span><span>{_esc(run["turns_completed"])}/{_esc(run["turns_planned"])} turns</span><span>{_esc(_billing_text(run))}</span></div>
+        <div class="metrics"><span>{_esc(_duration_text(run["duration_ms"]))}</span><span>{_esc(run["tool_count"])} tools</span><span>{_esc(run["turns_completed"])}/{_esc(run["turns_planned"])} turns</span><span>{_esc(_billing_text(run))}</span></div>
+        {_pricing_details_html(run)}
         <h4>Final response</h4><pre class="final">{_esc(run["final"])}</pre>
         <details><summary>Trajectory</summary>{turns or "<p>No completed turn evidence.</p>"}</details>
         <details><summary>Objective checks</summary>{validators or "<p>Not run.</p>"}</details>
@@ -578,7 +877,7 @@ def render_experiment_report_html(report: dict[str, Any]) -> str:
         f"<code>{_esc(arm['runner'])}</code> · <code>{_esc(arm['model'])}</code></div>"
         f"<b>{arm['execution_succeeded']}/{arm['runs']}</b> executions succeeded<br>"
         f"<b>{arm['validation_passed']}/{arm['runs']}</b> passed all objective checks<br>"
-        f"<span>{_esc(arm['median_duration_ms'])} ms median</span></div>"
+        f"<span>{_esc(_duration_text(arm['median_duration_ms']))} median</span></div>"
         for arm in report["arms"]
     )
     pairs = "".join(_pair_html(pair, index) for index, pair in enumerate(report["pairs"], 1))
@@ -635,10 +934,11 @@ def render_experiment_report_html(report: dict[str, Any]) -> str:
 <body data-reveal="0"><header class="hero"><div><div class="eyebrow">evalmine · episode evidence</div><h1>{_esc(report["question"])}</h1><p>{_esc(report["experiment"])} · plan <code>{_esc(report["plan_id"])}</code></p></div>
 <button id="reveal" aria-pressed="false">Reveal identities</button></header>
 <main><section class="summary"><div><small>Runs</small><b>{report["run_count"]}</b></div><div><small>{review_label}</small><b>{review_count}</b></div><div><small>Execution</small><b>{execution_passed}/{report["run_count"]} complete</b></div><div><small>Objective checks</small><b>{validation_passed}/{report["run_count"]} passed all</b></div></section>
-<section><div class="section-head"><div><div class="eyebrow">Experiment</div><h2>What is being decided</h2></div><div id="progress">0 labeled of {review_count} {review_unit}</div></div><p class="question">{_esc(report["question"])}</p><ul>{"".join(f"<li>{_esc(item)}</li>" for item in report["objectives"])}</ul><div class="arms">{arms}</div></section>
+<section><div class="section-head"><div><div class="eyebrow">Experiment</div><h2>What is being decided</h2></div><div id="progress">0 labeled of {review_count} {review_unit}</div></div><p class="question">{_esc(report["question"])}</p><ul>{"".join(f"<li>{_esc(item)}</li>" for item in report["objectives"])}</ul><div class="arms">{arms}</div>{_pricing_summary_html(report)}</section>
 <section><div class="section-head"><div><div class="eyebrow">Shared task</div><h2>Prompts given identically to every model</h2></div></div>{prompt_cards}</section>
 <section><div class="section-head"><div><div class="eyebrow">Blind review queue</div><h2>{'Rank all outcomes together' if ranking_style == 'n-way' else 'Compare trajectory evidence, then label'}</h2></div><div class="actions"><button id="export">Export labels JSON</button><label class="import">Import labels<input id="import" type="file" accept="application/json"></label></div></div>
-<div class="notice">Ranking style: <b>{_esc(ranking_style)}</b> ({style_note}). Identities are hidden by default. Mechanical objective checks are evidence annotations, not automatic exclusions.</div>{rankings if ranking_style == "n-way" else (pairs or "<p>No comparable run pairs.</p>")}</section>
+<div class="notice">Ranking style: <b>{_esc(ranking_style)}</b> ({style_note}). Identities are hidden by default. Mechanical objective checks are evidence annotations, not automatic exclusions. API list-price equivalents are identity-revealing and remain hidden until identities are revealed.</div>
+<div class="notice"><b>Judge workflow:</b> judge verdicts are intentionally absent from this blind labeling report. Export human labels before viewing judge results; the final decision report compares the independent human and judge rankings and surfaces disagreements. With at most {_esc(report['pair_count'])} induced pair labels here versus a calibration minimum of {_esc(report['judge'].get('min_labels', 'unspecified'))}, judge evidence may remain diagnostic only.</div>{rankings if ranking_style == "n-way" else (pairs or "<p>No comparable run pairs.</p>")}</section>
 </main><footer>Generated {_esc(report["generated_at"])} · self-contained · no external assets</footer>
 <script type="application/json" id="evalmine-episode-data">{_json_blob(data)}</script><script>{_JS}</script></body></html>"""
 
@@ -649,10 +949,14 @@ def generate_experiment_report(
     generated_at: str | None = None,
     ranking_style: str | None = None,
     output: str | Path | None = None,
+    prices_path: str | Path | None = None,
 ) -> ExperimentReportResult:
     """Create one report envelope without launching a provider or modifying workspaces."""
     report = build_experiment_report_data(
-        root, generated_at=generated_at, ranking_style=ranking_style
+        root,
+        generated_at=generated_at,
+        ranking_style=ranking_style,
+        prices_path=prices_path,
     )
     prepared_root = Path(root).resolve()
     report_root = Path(output).resolve() if output is not None else prepared_root / "report"

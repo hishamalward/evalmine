@@ -41,6 +41,11 @@ class PriceRow:
     input_per_mtok: float
     output_per_mtok: float
     cached_input_per_mtok: float = 0.0
+    cache_write_5m_per_mtok: float | None = None
+    cache_write_1h_per_mtok: float | None = None
+    long_context_threshold_tokens: int | None = None
+    long_context_input_multiplier: float = 1.0
+    long_context_output_multiplier: float = 1.0
     source: str | None = None
     read_on: str | None = None
 
@@ -109,6 +114,27 @@ def _row_from(raw: dict[str, Any], path: Path) -> PriceRow:
             input_per_mtok=float(raw["input_per_mtok"]),
             output_per_mtok=float(raw["output_per_mtok"]),
             cached_input_per_mtok=float(raw.get("cached_input_per_mtok") or 0.0),
+            cache_write_5m_per_mtok=(
+                float(raw["cache_write_5m_per_mtok"])
+                if raw.get("cache_write_5m_per_mtok") is not None
+                else None
+            ),
+            cache_write_1h_per_mtok=(
+                float(raw["cache_write_1h_per_mtok"])
+                if raw.get("cache_write_1h_per_mtok") is not None
+                else None
+            ),
+            long_context_threshold_tokens=(
+                int(raw["long_context_threshold_tokens"])
+                if raw.get("long_context_threshold_tokens") is not None
+                else None
+            ),
+            long_context_input_multiplier=float(
+                raw.get("long_context_input_multiplier") or 1.0
+            ),
+            long_context_output_multiplier=float(
+                raw.get("long_context_output_multiplier") or 1.0
+            ),
             source=raw.get("source"),
             read_on=(str(raw["read_on"]) if raw.get("read_on") is not None else None),
         )

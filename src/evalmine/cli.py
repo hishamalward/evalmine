@@ -338,6 +338,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="write a create-once report revision here instead of PREPARED/report",
     )
+    experiment_report.add_argument(
+        "--prices",
+        default=None,
+        help="pinned price table for API list-price equivalents (default: newest shipped)",
+    )
     experiment_report.add_argument("--json", action="store_true")
     experiment_judge = experiment_subparsers.add_parser(
         "judge",
@@ -734,6 +739,7 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             args.prepared,
             ranking_style=args.ranking_style,
             output=args.out,
+            prices_path=args.prices,
         )
         if args.json:
             print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
