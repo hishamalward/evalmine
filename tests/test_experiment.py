@@ -83,6 +83,8 @@ def test_example_manifest_loads(filename):
     assert len(experiment.arms) == 3
     assert len(experiment.episodes[0].turns) == 2
     assert experiment.episodes[0].turns[0].prompt_file is not None
+    if filename == "agent-model-comparison.yaml":
+        assert experiment.evaluation.ranking_style == "n-way"
 
 
 def test_plan_expands_every_arm_episode_and_repeat(write_experiment):
@@ -155,6 +157,17 @@ def test_unknown_key_is_an_error(write_experiment):
     doc["arms"][0]["modle"] = "typo"
     with pytest.raises(ExperimentError, match="modle"):
         load_experiment(write_experiment(doc))
+
+
+def test_ranking_style_and_judge_protocol_must_agree(write_experiment):
+    doc = copy.deepcopy(MINIMAL_EXPERIMENT)
+    doc["evaluation"]["ranking_style"] = "n-way"
+    with pytest.raises(ExperimentError, match="n-way ranking requires"):
+        load_experiment(write_experiment(doc))
+    doc["evaluation"]["judge"]["pairwise"] = False
+    doc["evaluation"]["judge"]["position_swap"] = False
+    experiment = load_experiment(write_experiment(doc))
+    assert experiment.evaluation.ranking_style == "n-way"
 
 
 def test_api_auth_requires_an_explicit_per_arm_cost_ceiling(write_experiment):

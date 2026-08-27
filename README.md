@@ -42,8 +42,9 @@ checks and the MCP surface are built and tested; the price table is verified aga
 each provider's public pricing page on its pinned date. The version-2 experiment
 contract, dry-run planner, and isolated workspace/evidence substrate are implemented;
 the subscription runner boundary for Claude Code, Codex CLI, and Gemini CLI, objective
-validators, workflow DAG, blind episode report, portable human labeling, position-
-swapped episode judging, calibration, decision HTML, and v2 MCP control plane are
+validators, workflow DAG, blind episode report, portable human labeling, configurable
+pairwise or N-way episode ranking, position-swapped pairwise judging, calibration,
+decision HTML, and v2 MCP control plane are
 implemented. Real subscription-backed dogfooding still requires an explicit operator
 run and human labels. No decision-log entry exists yet — see
 [Not yet](#not-yet).

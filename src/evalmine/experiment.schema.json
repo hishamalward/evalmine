@@ -328,6 +328,7 @@
       "additionalProperties": false,
       "required": ["objectives", "blind", "human", "judge"],
       "properties": {
+        "ranking_style": { "enum": ["pairwise", "n-way"] },
         "objectives": {
           "type": "array",
           "minItems": 1,

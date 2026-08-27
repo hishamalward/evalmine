@@ -26,6 +26,7 @@ from .experiment import ExperimentError
 from .experiment_report import (
     CHOICES,
     LABEL_FORMAT,
+    RANKING_LABEL_FORMAT,
     build_experiment_report_data,
 )
 from .metrics import (
@@ -63,10 +64,30 @@ JUDGE_SCHEMA: dict[str, Any] = {
         "reason": {"type": "string"},
     },
 }
+NWAY_JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ranking", "reason"],
+    "properties": {
+        "ranking": {
+            "type": "array",
+            "minItems": 2,
+            "items": {"type": "string"},
+            "uniqueItems": True,
+        },
+        "reason": {"type": "string"},
+    },
+}
 JUDGE_SYSTEM = (
     "You are comparing two complete agent trajectories from the same controlled "
     "episode. Identity, provider, model, price, and arm labels are intentionally "
     "hidden. Apply the objectives literally and return JSON only."
+)
+NWAY_JUDGE_SYSTEM = (
+    "You are ranking complete agent trajectories from the same controlled episode. "
+    "Identity, provider, model, price, and arm labels are intentionally hidden. Apply "
+    "the objectives literally, rank every outcome exactly once from best to worst, and "
+    "return JSON only."
 )
 DEFAULT_JUDGE_MAX_TOKENS = 700
 DEFAULT_MIN_KAPPA = 0.40
@@ -166,6 +187,7 @@ def _run_summary(run: dict[str, Any]) -> str:
         tool_count = len(turn.get("tools", []))
         turns.append(
             f"TURN {turn.get('turn')} ({turn.get('status')}, {turn.get('duration_ms')} ms)\n"
+            f"Prompt:\n{turn.get('prompt', '')}\n"
             f"Tool events: {tool_count}\nFinal response:\n{turn.get('final', '')}"
         )
     validators = []
@@ -216,6 +238,62 @@ not an automatic loss unless the objectives make it decisive. Ties are valid.
 === VERDICT ===
 Return exactly {{"winner":"1"|"2"|"tie","reason":"one concise reason"}}.
 """
+
+
+def build_episode_ranking_prompt(
+    ranking: dict[str, Any], objectives: Sequence[str]
+) -> str:
+    """Build one identity-blind prompt that ranks every arm in a block together."""
+    objective_text = "\n".join(f"- {item}" for item in objectives)
+    outcomes = "\n\n".join(
+        f"=== OUTCOME {outcome['label']} ===\n{_run_summary(outcome['run'])}"
+        for outcome in ranking["outcomes"]
+    )
+    labels = [str(outcome["label"]) for outcome in ranking["outcomes"]]
+    return f"""Rank all outcomes from the same episode together. Consider the complete
+trajectory, workspace changes, objective checks, and final response. A failed objective
+check is evidence, not an automatic exclusion. Return a strict best-to-worst ordering.
+
+=== OBJECTIVES ===
+{objective_text}
+
+{outcomes}
+
+=== RANKING ===
+Return exactly one JSON object with "ranking" containing each of {json.dumps(labels)}
+exactly once from best to worst, plus "reason" with one concise explanation.
+"""
+
+
+def _parse_ranking_call(call: EpisodeJudgeCall, ranking: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = json.loads(call.text)
+    except json.JSONDecodeError:
+        parsed = None
+    expected = [str(outcome["label"]) for outcome in ranking["outcomes"]]
+    order = parsed.get("ranking") if isinstance(parsed, dict) else None
+    valid = (
+        isinstance(order, list)
+        and all(isinstance(label, str) for label in order)
+        and len(order) == len(expected)
+        and len(set(order)) == len(order)
+        and set(order) == set(expected)
+        and isinstance(parsed.get("reason"), str)
+    )
+    return {
+        "ranking_id": ranking["ranking_id"],
+        "status": "parsed" if valid else "unparseable",
+        "ranking": order if valid else None,
+        "ranked_run_keys": (
+            [ranking["run_key_by_label"][label] for label in order] if valid else None
+        ),
+        "reason": parsed["reason"] if valid else None,
+        "latency_ms": call.latency_ms,
+        "input_tokens": call.input_tokens,
+        "output_tokens": call.output_tokens,
+        "cost_usd": call.cost_usd,
+        "observed_model": call.observed_model,
+    }
 
 
 def _parse_judge_call(call: EpisodeJudgeCall, order: int) -> dict[str, Any]:
@@ -270,21 +348,25 @@ class _ApiJudge:
         adapter: Adapter,
         price_table: PriceTable | None,
         max_tokens: int,
+        schema: dict[str, Any] = JUDGE_SCHEMA,
+        system: str = JUDGE_SYSTEM,
     ) -> None:
         self.provider, self.model_id = split_model(model)
         self.adapter = adapter
         self.row = price_table.get(model) if price_table is not None else None
         self.max_tokens = max_tokens
+        self.schema = schema
+        self.system = system
 
     def __call__(self, prompt: str) -> EpisodeJudgeCall:
         response: Response = call_with_retries(
             self.adapter,
             Request(
                 model_id=self.model_id,
-                system=JUDGE_SYSTEM,
+                system=self.system,
                 prompt=prompt,
                 max_tokens=self.max_tokens,
-                schema=JUDGE_SCHEMA,
+                schema=self.schema,
             ),
         )
         cost = (
@@ -317,6 +399,8 @@ class _SubscriptionJudge:
         *,
         driver: ProcessDriver,
         executable_overrides: dict[str, str] | None,
+        schema: dict[str, Any] = JUDGE_SCHEMA,
+        system: str = JUDGE_SYSTEM,
     ) -> None:
         executable = _resolve_executable(runner, executable_overrides)
         if executable is None:
@@ -327,6 +411,8 @@ class _SubscriptionJudge:
         self.schema_path = schema_path
         self.driver = driver
         self.executable = executable
+        self.schema = schema
+        self.system = system
 
     def _command(self) -> list[str]:
         if self.runner == "claude-code":
@@ -348,7 +434,7 @@ class _SubscriptionJudge:
                 "--no-chrome",
                 "--no-session-persistence",
                 "--json-schema",
-                json.dumps(JUDGE_SCHEMA, separators=(",", ":")),
+                json.dumps(self.schema, separators=(",", ":")),
             ]
         if self.runner == "codex-cli":
             return [
@@ -392,7 +478,7 @@ class _SubscriptionJudge:
         result = self.driver.run(
             self._command(),
             cwd=self.cwd,
-            input_text=JUDGE_SYSTEM + "\n\n" + prompt,
+            input_text=self.system + "\n\n" + prompt,
             timeout=1800,
             env=_child_env({}),
         )
@@ -423,11 +509,16 @@ class _SubscriptionJudge:
 
 
 def _estimate_api_judging(
-    prompts: Sequence[str], model: str, table: PriceTable, max_tokens: int
+    prompts: Sequence[str],
+    model: str,
+    table: PriceTable,
+    max_tokens: int,
+    *,
+    system: str = JUDGE_SYSTEM,
 ) -> float:
     row = table.get(model)
     return sum(
-        (estimate_tokens(prompt) + estimate_tokens(JUDGE_SYSTEM))
+        (estimate_tokens(prompt) + estimate_tokens(system))
         / 1e6
         * row.input_per_mtok
         + max_tokens / 1e6 * row.output_per_mtok
@@ -445,25 +536,43 @@ def judge_experiment(
     caller: Callable[[str], EpisodeJudgeCall] | None = None,
     driver: ProcessDriver | None = None,
     executable_overrides: dict[str, str] | None = None,
+    ranking_style: str | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> JudgingResult:
-    """Run two position-swapped judge passes for every episode pair."""
+    """Run the preregistered pairwise or N-way episode judging protocol."""
     if not allow_provider_calls and caller is None and not fake:
         raise JudgeRefused("judging can contact a provider; pass --allow-provider-calls")
     prepared = Path(verify_prepared(root)["root"])
-    report = build_experiment_report_data(prepared)
+    report = build_experiment_report_data(prepared, ranking_style=ranking_style)
     config = report["judge"]
     if not config.get("enabled"):
         raise JudgeRefused("this experiment has evaluation.judge.enabled=false")
-    if not config.get("pairwise") or not config.get("position_swap"):
-        raise JudgeRefused("episode judging requires pairwise=true and position_swap=true")
+    ranking_style = str(report.get("ranking_style", "pairwise"))
+    style_from_plan = report.get("ranking_style_source") == "plan"
+    if ranking_style == "pairwise":
+        if style_from_plan and (not config.get("pairwise") or not config.get("position_swap")):
+            raise JudgeRefused("pairwise judging requires pairwise=true and position_swap=true")
+        schema = JUDGE_SCHEMA
+        system = JUDGE_SYSTEM
+        prompts = [
+            build_episode_judge_prompt(pair, report["objectives"], order=order)
+            for pair in report["pairs"]
+            for order in (1, 2)
+        ]
+    elif ranking_style == "n-way":
+        if style_from_plan and (config.get("pairwise") or config.get("position_swap")):
+            raise JudgeRefused("n-way judging requires pairwise=false and position_swap=false")
+        schema = NWAY_JUDGE_SCHEMA
+        system = NWAY_JUDGE_SYSTEM
+        prompts = [
+            build_episode_ranking_prompt(ranking, report["objectives"])
+            for ranking in report["rankings"]
+        ]
+    else:
+        raise JudgeRefused(f"unknown ranking style {ranking_style!r}")
     judging_root = prepared / "judging"
     if judging_root.exists() or judging_root.is_symlink():
         raise JudgeRefused(f"judging evidence already exists at {judging_root}")
-    prompts = [
-        build_episode_judge_prompt(pair, report["objectives"], order=order)
-        for pair in report["pairs"]
-        for order in (1, 2)
-    ]
     runner = str(config.get("runner") or "")
     model = str(config.get("model") or "")
     max_tokens = int(config.get("max_tokens", DEFAULT_JUDGE_MAX_TOKENS))
@@ -479,6 +588,8 @@ def judge_experiment(
                 adapter=build_adapter(provider, fake=True),
                 price_table=None,
                 max_tokens=max_tokens,
+                schema=schema,
+                system=system,
             )
             runner = "fake"
         elif runner == "api-prompt":
@@ -487,7 +598,9 @@ def judge_experiment(
             if max_cost_usd is None or float(max_cost_usd) <= 0:
                 raise JudgeRefused("API judging requires a positive --max-cost")
             price_table = load_price_table(prices_path)
-            estimate = _estimate_api_judging(prompts, model, price_table, max_tokens)
+            estimate = _estimate_api_judging(
+                prompts, model, price_table, max_tokens, system=system
+            )
             if estimate > float(max_cost_usd):
                 raise JudgeRefused(
                     f"judging estimate ${estimate:.4f} exceeds ${float(max_cost_usd):.2f}; "
@@ -499,6 +612,8 @@ def judge_experiment(
                 adapter=build_adapter(provider),
                 price_table=price_table,
                 max_tokens=max_tokens,
+                schema=schema,
+                system=system,
             )
         else:
             schema_path = judging_root / "judge-schema.json"
@@ -509,51 +624,156 @@ def judge_experiment(
                 schema_path,
                 driver=driver or ProcessDriver(),
                 executable_overrides=executable_overrides,
+                schema=schema,
+                system=system,
             )
             judging_root.mkdir()
-            _write_read_only(schema_path, _json_bytes(JUDGE_SCHEMA))
+            _write_read_only(schema_path, _json_bytes(schema))
     if not judging_root.exists():
         judging_root.mkdir()
     rows: list[dict[str, Any]] = []
+    ranking_rows: list[dict[str, Any]] = []
     total_cost = 0.0
     cost_complete = True
     call_index = 0
-    for pair in report["pairs"]:
-        ordered_keys = sorted((pair["a_run_key"], pair["b_run_key"]))
-        passes = []
-        for order in (1, 2):
+    if progress is not None:
+        progress(
+            {
+                "event": "judging_started",
+                "ranking_style": ranking_style,
+                "call_count": len(prompts),
+                "model": model,
+            }
+        )
+    if ranking_style == "pairwise":
+        for pair in report["pairs"]:
+            ordered_keys = sorted((pair["a_run_key"], pair["b_run_key"]))
+            passes = []
+            for order in (1, 2):
+                call_index += 1
+                prompt = build_episode_judge_prompt(pair, report["objectives"], order=order)
+                if progress is not None:
+                    progress(
+                        {
+                            "event": "judge_call_started",
+                            "call_position": call_index,
+                            "call_count": len(prompts),
+                            "ranking_style": ranking_style,
+                            "model": model,
+                        }
+                    )
+                call = caller(prompt)
+                parsed = _parse_judge_call(call, order)
+                raw_path = f"calls/{call_index:04d}.raw.txt"
+                _write_read_only(
+                    judging_root / raw_path,
+                    _redact_secrets(call.raw or call.text).encode(),
+                )
+                parsed["raw"] = raw_path
+                parsed["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
+                passes.append(parsed)
+                if progress is not None:
+                    progress(
+                        {
+                            "event": "judge_call_completed",
+                            "call_position": call_index,
+                            "call_count": len(prompts),
+                            "ranking_style": ranking_style,
+                            "model": model,
+                            "status": parsed["status"],
+                            "duration_ms": call.latency_ms,
+                        }
+                    )
+                if call.cost_usd is None:
+                    cost_complete = False
+                else:
+                    total_cost += call.cost_usd
+            if all(item["status"] == "parsed" for item in passes):
+                score, category = score_pair(passes[0]["verdict"], passes[1]["verdict"])
+                status = "scored"
+            else:
+                score, category, status = None, None, "excluded"
+            rows.append(
+                {
+                    "pair_id": pair["pair_id"],
+                    "block": pair["block"],
+                    "episode": pair["episode"],
+                    "repeat": pair["repeat"],
+                    "baseline_run_key": ordered_keys[0],
+                    "candidate_run_key": ordered_keys[1],
+                    "status": status,
+                    "score": score,
+                    "category": category,
+                    "passes": passes,
+                }
+            )
+    else:
+        for ranking in report["rankings"]:
             call_index += 1
-            prompt = build_episode_judge_prompt(pair, report["objectives"], order=order)
+            prompt = build_episode_ranking_prompt(ranking, report["objectives"])
+            if progress is not None:
+                progress(
+                    {
+                        "event": "judge_call_started",
+                        "call_position": call_index,
+                        "call_count": len(prompts),
+                        "ranking_style": ranking_style,
+                        "model": model,
+                    }
+                )
             call = caller(prompt)
-            parsed = _parse_judge_call(call, order)
+            parsed = _parse_ranking_call(call, ranking)
             raw_path = f"calls/{call_index:04d}.raw.txt"
-            _write_read_only(judging_root / raw_path, _redact_secrets(call.raw or call.text).encode())
+            _write_read_only(
+                judging_root / raw_path,
+                _redact_secrets(call.raw or call.text).encode(),
+            )
             parsed["raw"] = raw_path
             parsed["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
-            passes.append(parsed)
+            ranking_rows.append(parsed)
+            if progress is not None:
+                progress(
+                    {
+                        "event": "judge_call_completed",
+                        "call_position": call_index,
+                        "call_count": len(prompts),
+                        "ranking_style": ranking_style,
+                        "model": model,
+                        "status": parsed["status"],
+                        "duration_ms": call.latency_ms,
+                    }
+                )
             if call.cost_usd is None:
                 cost_complete = False
             else:
                 total_cost += call.cost_usd
-        if all(item["status"] == "parsed" for item in passes):
-            score, category = score_pair(passes[0]["verdict"], passes[1]["verdict"])
-            status = "scored"
-        else:
-            score, category, status = None, None, "excluded"
-        rows.append(
-            {
-                "pair_id": pair["pair_id"],
-                "block": pair["block"],
-                "episode": pair["episode"],
-                "repeat": pair["repeat"],
-                "baseline_run_key": ordered_keys[0],
-                "candidate_run_key": ordered_keys[1],
-                "status": status,
-                "score": score,
-                "category": category,
-                "passes": passes,
+            positions = {
+                run_key: index
+                for index, run_key in enumerate(parsed.get("ranked_run_keys") or [])
             }
-        )
+            for pair in (item for item in report["pairs"] if item["block"] == ranking["block"]):
+                ordered_keys = sorted((pair["a_run_key"], pair["b_run_key"]))
+                if parsed["status"] == "parsed":
+                    score = float(positions[ordered_keys[1]] < positions[ordered_keys[0]])
+                    category = judge_category(score)
+                    status = "scored"
+                else:
+                    score, category, status = None, None, "excluded"
+                rows.append(
+                    {
+                        "pair_id": pair["pair_id"],
+                        "block": pair["block"],
+                        "episode": pair["episode"],
+                        "repeat": pair["repeat"],
+                        "baseline_run_key": ordered_keys[0],
+                        "candidate_run_key": ordered_keys[1],
+                        "status": status,
+                        "score": score,
+                        "category": category,
+                        "passes": [],
+                        "source_ranking_id": ranking["ranking_id"],
+                    }
+                )
     payload = {
         "format": JUDGING_FORMAT,
         "created_at": _now(),
@@ -561,6 +781,9 @@ def judge_experiment(
         "plan_id": report["plan_id"],
         "runner": runner,
         "model": model,
+        "ranking_style": ranking_style,
+        "planned_ranking_style": report["planned_ranking_style"],
+        "ranking_style_source": report["ranking_style_source"],
         "billing_basis": "api" if runner == "api-prompt" else "subscription-or-local",
         "estimated_cost_usd": estimate,
         "cost_usd": total_cost if cost_complete else None,
@@ -568,16 +791,33 @@ def judge_experiment(
         "pair_count": len(rows),
         "call_count": call_index,
         "pairs": rows,
+        "ranking_count": len(ranking_rows),
+        "rankings": ranking_rows,
     }
     _write_read_only(judging_root / "pairs.json", _json_bytes(payload))
     marker = {
         **{key: payload[key] for key in ("format", "created_at", "prepared_root", "plan_id")},
         "status": "completed",
         "pair_count": len(rows),
+        "ranking_count": len(ranking_rows),
+        "ranking_style": ranking_style,
+        "planned_ranking_style": report["planned_ranking_style"],
+        "ranking_style_source": report["ranking_style_source"],
         "call_count": call_index,
         "evidence_sha256": _hashes(judging_root, "judging.json"),
     }
     _write_read_only(judging_root / "judging.json", _json_bytes(marker))
+    if progress is not None:
+        progress(
+            {
+                "event": "judging_completed",
+                "ranking_style": ranking_style,
+                "call_count": call_index,
+                "pair_count": len(rows),
+                "status": "completed",
+                "model": model,
+            }
+        )
     return JudgingResult(judging_root, len(rows), call_index, "completed")
 
 
@@ -603,13 +843,15 @@ def _load_human_labels(
     label_paths: Sequence[str | Path], report: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     pairs = {item["pair_id"]: item for item in report["pairs"]}
+    rankings = {item["ranking_id"]: item for item in report.get("rankings", [])}
     labels: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for label_path in label_paths:
         path = Path(label_path).resolve()
         payload = _read_json(path)
-        if payload.get("format") != LABEL_FORMAT:
+        label_format = payload.get("format")
+        if label_format not in {LABEL_FORMAT, RANKING_LABEL_FORMAT}:
             raise DecisionError(f"{path}: unknown label format")
         if payload.get("plan_id") != report["plan_id"]:
             raise DecisionError(f"{path}: labels belong to a different plan")
@@ -621,6 +863,73 @@ def _load_human_labels(
                 "annotator": annotator,
             }
         )
+        if label_format == RANKING_LABEL_FORMAT:
+            rows = payload.get("rankings")
+            if not isinstance(rows, list):
+                raise DecisionError(f"{path}: rankings must be a list")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise DecisionError(f"{path}: malformed ranking row")
+                ranking_id = str(row.get("ranking_id"))
+                ranking = rankings.get(ranking_id)
+                if ranking is None:
+                    raise DecisionError(f"{path}: unknown ranking {ranking_id!r}")
+                unclear = bool(row.get("unclear"))
+                order = row.get("order")
+                expected_labels = set(ranking["run_key_by_label"])
+                if not isinstance(order, list) or any(
+                    not isinstance(label, str) for label in order
+                ):
+                    raise DecisionError(f"{path}: malformed order for {ranking_id}")
+                if unclear:
+                    if order:
+                        raise DecisionError(f"{path}: unclear ranking {ranking_id} has an order")
+                    positions: dict[str, int] = {}
+                else:
+                    if len(order) != len(expected_labels) or set(order) != expected_labels:
+                        raise DecisionError(
+                            f"{path}: ranking {ranking_id} must contain every outcome exactly once"
+                        )
+                    ranked_run_keys = [ranking["run_key_by_label"][label] for label in order]
+                    provided_run_keys = row.get("ranked_run_keys")
+                    if provided_run_keys is not None and provided_run_keys != ranked_run_keys:
+                        raise DecisionError(
+                            f"{path}: ranked-run mapping is inconsistent for {ranking_id}"
+                        )
+                    positions = {
+                        run_key: index for index, run_key in enumerate(ranked_run_keys)
+                    }
+                for pair in (
+                    item for item in report["pairs"] if item["block"] == ranking["block"]
+                ):
+                    pair_id = pair["pair_id"]
+                    key = (annotator, pair_id)
+                    if key in seen:
+                        raise DecisionError(
+                            f"{path}: duplicate label for {pair_id} by {annotator}"
+                        )
+                    seen.add(key)
+                    baseline, candidate = sorted((pair["a_run_key"], pair["b_run_key"]))
+                    category = (
+                        "unclear"
+                        if unclear
+                        else "baseline"
+                        if positions[baseline] < positions[candidate]
+                        else "candidate"
+                    )
+                    labels.append(
+                        {
+                            "pair_id": pair_id,
+                            "ranking_id": ranking_id,
+                            "episode": pair["episode"],
+                            "annotator": annotator,
+                            "choice": "ranking",
+                            "category": category,
+                            "note": row.get("note"),
+                            "identities_revealed": bool(row.get("identities_revealed")),
+                        }
+                    )
+            continue
         rows = payload.get("labels")
         if not isinstance(rows, list):
             raise DecisionError(f"{path}: labels must be a list")
@@ -838,6 +1147,9 @@ def build_decision_data(
         "arm": None if tied_top else top_arm,
         "basis": "blind human aggregate; judge headline requires calibration",
     }
+    ranking_style = str(
+        judging.get("ranking_style") if judging else report.get("ranking_style", "pairwise")
+    )
     return {
         "format": DECISION_FORMAT,
         "generated_at": generated_at or _now(),
@@ -846,6 +1158,7 @@ def build_decision_data(
         "experiment": report["experiment"],
         "question": report["question"],
         "objectives": report["objectives"],
+        "ranking_style": ranking_style,
         "arms": report["arms"],
         "pair_count": report["pair_count"],
         "labelled_pairs": labelled_pairs,
@@ -905,6 +1218,14 @@ def render_decision_html(data: dict[str, Any]) -> str:
             "human labels. " + reason
         )
     recommendation = data["recommendation"]
+    n_way = data.get("ranking_style") == "n-way"
+    evidence_label = "Induced pair evidence" if n_way else "Pairwise evidence"
+    evidence_note = (
+        "Scores are induced from one full N-way ordering per episode/repeat."
+        if n_way
+        else "Scores use position-swapped judging."
+    )
+    pair_label = "Induced pairs" if n_way else "Pairs"
     recommendation_text = (
         f"Prefer {recommendation['arm']} on the blind human aggregate."
         if recommendation.get("arm")
@@ -913,10 +1234,10 @@ def render_decision_html(data: dict[str, Any]) -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{_esc(data['experiment'])} · decision</title><style>
 :root{{--ink:#17231d;--muted:#607068;--paper:#f5f1e8;--card:#fffdf7;--green:#145f42;--amber:#b86d13;--line:#d8d2c3}}*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,sans-serif}}header,main,footer{{max-width:1120px;margin:auto;padding:28px}}header{{padding-top:64px}}.eyebrow{{color:var(--green);font-weight:800;text-transform:uppercase;letter-spacing:.12em;font-size:12px}}h1{{font:700 clamp(32px,5vw,62px)/1.04 Georgia,serif;margin:.2em 0}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}.card,section{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:16px 0}}.card b{{display:block;font-size:30px}}.warn{{border-left:6px solid var(--amber)}}.ok{{border-left:6px solid var(--green)}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px;text-align:left;border-bottom:1px solid var(--line)}}small{{color:var(--muted)}}code{{font-size:.86em}}@media(max-width:700px){{.grid{{grid-template-columns:1fr 1fr}}table{{font-size:13px}}header,main,footer{{padding:18px}}}}
 </style></head><body><header><div class="eyebrow">evalmine · decision evidence</div><h1>{_esc(data['question'])}</h1><p>{_esc(data['experiment'])} · plan <code>{_esc(data['plan_id'])}</code></p></header><main>
-<div class="grid"><div class="card"><small>Pairs</small><b>{data['pair_count']}</b></div><div class="card"><small>Human-labelled</small><b>{data['labelled_pairs']}</b></div><div class="card"><small>LLM-judged</small><b>{data['judged_pairs']}</b></div><div class="card"><small>Disagreements</small><b>{len(data['disagreements'])}</b></div></div>
+<div class="grid"><div class="card"><small>{pair_label}</small><b>{data['pair_count']}</b></div><div class="card"><small>Human-labelled</small><b>{data['labelled_pairs']}</b></div><div class="card"><small>LLM-judged</small><b>{data['judged_pairs']}</b></div><div class="card"><small>Disagreements</small><b>{len(data['disagreements'])}</b></div></div>
 <section class="{'ok' if recommendation.get('arm') else 'warn'}"><div class="eyebrow">Decision</div><h2>{_esc(recommendation_text)}</h2><p>{_esc(recommendation['basis'])}</p></section>
 <section class="{'ok' if data['headline_eligible'] else 'warn'}"><div class="eyebrow">Calibration gate</div><h2>{status}</h2><p>{_esc(reason)}</p><p>Kappa: <b>{_esc(calibration.get('kappa'))}</b> ({_esc(calibration.get('kappa_band'))}); agreement {_pct(calibration.get('agreement'))}; n={calibration.get('n_labels')}.</p></section>
-<section><div class="eyebrow">Pairwise evidence</div><h2>Candidate preference by arm</h2><table><thead><tr><th>Candidate</th><th>Compared with</th><th>Human</th><th>Judge</th></tr></thead><tbody>{comparison_html}</tbody></table><p><small>Scores use position-swapped judging. Confidence intervals are retained in data.json and suppressed below eight pairs.</small></p></section>
+<section><div class="eyebrow">{evidence_label}</div><h2>Candidate preference by arm</h2><table><thead><tr><th>Candidate</th><th>Compared with</th><th>Human</th><th>Judge</th></tr></thead><tbody>{comparison_html}</tbody></table><p><small>{evidence_note} Confidence intervals are retained in data.json and suppressed below eight pairs.</small></p></section>
 <section><div class="eyebrow">Audit queue</div><h2>Human ↔ judge disagreements</h2><ul>{disagreement_html}</ul></section>
 <section><div class="eyebrow">Interpretation</div><h2>What this report can claim</h2><p>{'The judge passed calibration and its aggregate results may be used as headline evidence.' if data['headline_eligible'] else 'Use the human rows and inspect disagreements. Judge aggregates are shown diagnostically, but the calibration gate prevents treating them as a headline conclusion.'}</p><p>{data['identities_revealed_labels']} imported labels were recorded after identity reveal.</p></section></main><footer>Generated {_esc(data['generated_at'])} · self-contained · raw evidence remains beside this report</footer></body></html>"""
 

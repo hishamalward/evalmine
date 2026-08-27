@@ -6,6 +6,7 @@ executables while recording exactly what evalmine would have launched.
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import threading
@@ -1024,6 +1025,10 @@ def test_episode_report_is_self_contained_blind_and_maps_every_label_to_the_visi
     assert "Export labels JSON" in html and "Import labels" in html
     assert "pair.preferred_run_by_choice[row.choice]" in html
     assert "repo-unchanged" in html and "follow-up-covered" in html
+    assert "Prompts given identically to every model" in html
+    assert "First private fake prompt." in html
+    assert "Subscription · per-run dollar cost unavailable" in html
+    assert "not-applicable-subscription" not in html
 
     blob = html.split('<script type="application/json" id="evalmine-episode-data">')[1]
     blob = blob.split("</script>")[0]
@@ -1162,6 +1167,114 @@ def test_episode_judging_labels_calibration_and_decision_report_are_end_to_end(
         generate_decision_report(prepared.root, [label_path])
 
 
+def test_n_way_report_judge_and_human_ranking_use_one_call(
+    runner_experiment, fake_executables, tmp_path
+):
+    original, manifest, fixture_doc = runner_experiment
+    discard_prepared(original.root)
+    doc = copy.deepcopy(fixture_doc)
+    doc["evaluation"]["ranking_style"] = "n-way"
+    doc["evaluation"]["judge"]["pairwise"] = False
+    doc["evaluation"]["judge"]["position_swap"] = False
+    manifest.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    prepared = prepare_experiment(load_experiment(manifest), tmp_path / "n-way-artifacts")
+    try:
+        execute_experiment(
+            prepared.root,
+            allow_provider_calls=True,
+            executable_overrides=fake_executables,
+            driver=FakeDriver(),
+        )
+        check_experiment(prepared.root)
+        report = build_experiment_report_data(prepared.root)
+        assert report["ranking_style"] == "n-way"
+        assert report["ranking_count"] == 1
+        assert report["pair_count"] == 3
+        assert report["episodes"][0]["prompts"][0]["prompt"] == "First private fake prompt."
+        html = render_experiment_report_html(report)
+        assert "Rank every outcome from best to worst" in html
+        assert html.count("data-rank-label=") == 3
+        assert 'data-choice="A"' not in html
+        revision = tmp_path / "n-way-report-revision"
+        assert (
+            main(
+                [
+                    "experiment",
+                    "report",
+                    str(prepared.root),
+                    "--ranking-style",
+                    "n-way",
+                    "--out",
+                    str(revision),
+                ]
+            )
+            == 0
+        )
+        marker = json.loads((revision / "report-marker.json").read_text())
+        assert marker["ranking_style"] == "n-way"
+        assert marker["ranking_style_source"] == "operator-override"
+
+        ranking = report["rankings"][0]
+        order = [outcome["label"] for outcome in ranking["outcomes"]]
+        prompts: list[str] = []
+
+        def judge_call(prompt: str) -> EpisodeJudgeCall:
+            prompts.append(prompt)
+            return EpisodeJudgeCall(
+                text=json.dumps({"ranking": order, "reason": "strict full ordering"}),
+                latency_ms=7,
+                input_tokens=10,
+                output_tokens=3,
+                cost_usd=0.001,
+                raw="safe N-way judge evidence",
+                observed_model="fake-judge",
+            )
+
+        result = judge_experiment(
+            prepared.root,
+            allow_provider_calls=False,
+            caller=judge_call,
+        )
+        assert result.call_count == 1
+        assert len(prompts) == 1
+        assert all(f"OUTCOME {label}" in prompts[0] for label in order)
+        judged = json.loads((prepared.root / "judging" / "pairs.json").read_text())
+        assert judged["ranking_style"] == "n-way"
+        assert judged["ranking_count"] == 1
+        assert judged["pair_count"] == 3
+        assert all(row["status"] == "scored" for row in judged["pairs"])
+
+        label_path = tmp_path / "rankings.json"
+        ranked_run_keys = [ranking["run_key_by_label"][label] for label in order]
+        label_path.write_text(
+            json.dumps(
+                {
+                    "format": "evalmine-human-rankings-v1",
+                    "ranking_style": "n-way",
+                    "plan_id": report["plan_id"],
+                    "annotator": "human-one",
+                    "rankings": [
+                        {
+                            "ranking_id": ranking["ranking_id"],
+                            "order": order,
+                            "ranked_run_keys": ranked_run_keys,
+                            "unclear": False,
+                            "identities_revealed": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        decision = generate_decision_report(prepared.root, [label_path])
+        assert decision.labelled_pairs == 3
+        assert decision.judged_pairs == 3
+        assert "Induced pair evidence" in decision.html.read_text()
+    finally:
+        if prepared.root.exists():
+            discard_prepared(prepared.root)
+
+
 def test_cli_fake_episode_judge_is_offline_and_needs_no_provider_confirmation(
     runner_experiment, fake_executables, capsys
 ):
@@ -1173,7 +1286,7 @@ def test_cli_fake_episode_judge_is_offline_and_needs_no_provider_confirmation(
         driver=FakeDriver(),
     )
     assert main(["experiment", "judge", str(prepared.root), "--fake"]) == 0
-    assert "position-swapped calls" in capsys.readouterr().out
+    assert "6 judge calls" in capsys.readouterr().out
     assert verify_judging(prepared.root)["call_count"] == 6
 
 

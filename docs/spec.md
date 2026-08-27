@@ -1902,6 +1902,17 @@ verifies every available source envelope. It never launches an agent, judge, or 
 command and never reads mutable workspace content. The report is built only from the
 already-redacted execution and validation evidence.
 
+The report always shows the exact shared prompt for every turn before asking for a label.
+Mechanical validator results are presented as objective-check annotations and do not make a
+complete model response disappear. Subscription evidence is rendered as subscription billing
+with no authoritative per-run dollar cost, rather than exposing internal billing enums.
+
+`evaluation.ranking_style` selects `pairwise` (the backwards-compatible default) or `n-way`.
+Pairwise review emits every unordered arm pair. N-way review shows every arm in an
+episode/repeat block together and asks for one strict best-to-worst ordering. A report or
+judge command may explicitly override the planned style; that post-plan analysis revision is
+recorded as `ranking_style_source: operator-override` rather than silently rewriting the plan.
+
 Runs are paired only within the same episode/repeat block. Every unordered pair of arms in
 that block appears exactly once, so a three-arm block yields three comparisons. A pair id is
 a stable hash of the block and two run keys. A/B order is derived from that id in Python,
@@ -1969,6 +1980,11 @@ the four declared choices. Human-label files are user-owned portable input; Phas
 silently write browser state back into immutable evidence. Importing labels into the scoring
 and judge-calibration layer is Phase 5B.
 
+For N-way review, each outcome receives one unique rank. The portable
+`evalmine-human-rankings-v1` export records the complete opaque-label order and corresponding
+run keys. Decision metrics derive the implied pair preferences from that single ranking; this
+does not cause additional model or judge calls.
+
 ### 13D.3 Artifact envelope and success criteria
 
 The report is create-once and independently hashed:
@@ -1995,18 +2011,21 @@ all four envelopes.
 
 ## 13E. Episode judging, calibration, and decision evidence
 
-`experiment judge <prepared-dir>` consumes the same verified episode pair view as the
-human report. For each pair it sends two calls with complete trajectories and outcome
-checks; the second swaps the two outcomes. Run/model/configuration identity and price are
+`experiment judge <prepared-dir>` consumes the same verified episode view as the human
+report. Pairwise mode sends two position-swapped calls per pair. N-way mode sends one call per
+episode/repeat block and requires a strict ordering containing every opaque outcome exactly
+once. Run/model/configuration identity and price are
 absent from the prompt. Subscription CLI judges use a read-only/plan-mode, no-plugin
 capsule; `api-prompt` judges require a positive USD cap and pass structured output through
 the existing provider adapters. `--fake` is deterministic and offline. Provider judging
 otherwise requires `--allow-provider-calls`.
 
-Judging is create-once under `judging/`. Every pass retains redacted raw output, parsed
+Judging is create-once under `judging/`. Every call retains redacted raw output, parsed
 winner/reason, prompt hash, latency, usage, observed model, and cost when applicable.
-Scores use the §7.2 five-value position-swap table. Unparseable pairs are excluded, never
-silently coerced. Subscription billing is marked as such and does not become `$0`.
+Pairwise scores use the §7.2 five-value position-swap table. N-way orderings are decomposed
+into induced pair preferences for the existing calibration and arm-ranking metrics.
+Unparseable calls are excluded, never silently coerced. Subscription billing is marked as
+such and does not become `$0`.
 
 `experiment decide <prepared-dir> --labels <file>...` accepts one or more Phase-5A label
 exports. Each file must match the plan; every choice and optional preferred-run mapping is

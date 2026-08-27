@@ -380,11 +380,13 @@ def experiment_check_impl(
         }
 
 
-def experiment_report_impl(prepared_path: str) -> dict[str, Any]:
+def experiment_report_impl(
+    prepared_path: str, *, ranking_style: str | None = None
+) -> dict[str, Any]:
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
         return _path_refusal(prepared_path, "prepared_path")
-    return generate_experiment_report(prepared).as_dict()
+    return generate_experiment_report(prepared, ranking_style=ranking_style).as_dict()
 
 
 def experiment_judge_impl(
@@ -392,6 +394,7 @@ def experiment_judge_impl(
     *,
     confirm_provider_calls: bool = False,
     max_cost_usd: float | None = None,
+    ranking_style: str | None = None,
 ) -> dict[str, Any]:
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
@@ -410,7 +413,10 @@ def experiment_judge_impl(
         "EVALMINE_MCP_MAX_COST", DEFAULT_MAX_COST
     )
     return judge_experiment(
-        prepared, allow_provider_calls=True, max_cost_usd=cap
+        prepared,
+        allow_provider_calls=True,
+        max_cost_usd=cap,
+        ranking_style=ranking_style,
     ).as_dict()
 
 
@@ -554,21 +560,25 @@ try:
         )
 
     @server.tool(structured_output=True)
-    def report_experiment(prepared_path: str) -> dict[str, Any]:
+    def report_experiment(
+        prepared_path: str, ranking_style: str | None = None
+    ) -> dict[str, Any]:
         """Generate the blind self-contained HTML labeling queue."""
-        return experiment_report_impl(prepared_path)
+        return experiment_report_impl(prepared_path, ranking_style=ranking_style)
 
     @server.tool(structured_output=True)
     def judge_experiment_tool(
         prepared_path: str,
         confirm_provider_calls: bool = False,
         max_cost_usd: float | None = None,
+        ranking_style: str | None = None,
     ) -> dict[str, Any]:
-        """Run position-swapped judging behind provider and MCP cost gates."""
+        """Run the configured ranking protocol behind provider and MCP cost gates."""
         return experiment_judge_impl(
             prepared_path,
             confirm_provider_calls=confirm_provider_calls,
             max_cost_usd=max_cost_usd,
+            ranking_style=ranking_style,
         )
 
     @server.tool(structured_output=True)

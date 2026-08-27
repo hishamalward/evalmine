@@ -128,6 +128,33 @@ def _print_experiment_progress(event: dict[str, object]) -> None:
             file=sys.stderr,
             flush=True,
         )
+        return
+    if kind == "judging_started":
+        print(
+            f"judging started: {event['call_count']} {event['ranking_style']} call(s) "
+            f"with {event['model']}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if kind in {"judge_call_started", "judge_call_completed"}:
+        prefix = f"[{event['call_position']}/{event['call_count']}]"
+        if kind == "judge_call_started":
+            message = f"{prefix} {event['model']} - judge call started"
+        else:
+            message = f"{prefix} {event['model']} - judge call {event['status']}"
+            elapsed = _format_progress_duration(event.get("duration_ms"))
+            if elapsed:
+                message += f" - {elapsed}"
+        print(message, file=sys.stderr, flush=True)
+        return
+    if kind == "judging_completed":
+        print(
+            f"judging completed: {event['call_count']} calls, "
+            f"{event['pair_count']} induced pairs",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -300,12 +327,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="generate a self-contained blind HTML episode report and labeling queue",
     )
     experiment_report.add_argument("prepared")
+    experiment_report.add_argument(
+        "--ranking-style",
+        choices=("pairwise", "n-way"),
+        default=None,
+        help="explicit derived-report ranking style; recorded as an operator override",
+    )
+    experiment_report.add_argument(
+        "--out",
+        default=None,
+        help="write a create-once report revision here instead of PREPARED/report",
+    )
     experiment_report.add_argument("--json", action="store_true")
     experiment_judge = experiment_subparsers.add_parser(
         "judge",
-        help="blindly judge every episode pair twice with positions swapped",
+        help="blindly apply the configured pairwise or N-way ranking protocol",
     )
     experiment_judge.add_argument("prepared")
+    experiment_judge.add_argument(
+        "--ranking-style",
+        choices=("pairwise", "n-way"),
+        default=None,
+        help="explicit judging protocol override; recorded in immutable judge evidence",
+    )
     experiment_judge.add_argument("--allow-provider-calls", action="store_true")
     experiment_judge.add_argument(
         "--max-cost", type=float, default=None, help="USD; required for API judging"
@@ -686,12 +730,23 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
         return EXIT_OK if result.verdict == "passed" else EXIT_RUNTIME
 
     if args.experiment_verb == "report":
-        result = generate_experiment_report(args.prepared)
+        result = generate_experiment_report(
+            args.prepared,
+            ranking_style=args.ranking_style,
+            output=args.out,
+        )
         if args.json:
             print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
         else:
+            review_count = (
+                result.pair_count
+                if result.ranking_style == "pairwise"
+                else result.ranking_count
+            )
+            review_unit = "pairs" if result.ranking_style == "pairwise" else "rankings"
             print(
-                f"wrote {result.html} - {result.pair_count} blind pairs across "
+                f"wrote {result.html} - "
+                f"{review_count} blind {review_unit} across "
                 f"{result.run_count} runs; provider runners launched: 0"
             )
         return EXIT_OK
@@ -705,13 +760,15 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             fake=args.fake,
             prices_path=args.prices,
             executable_overrides=overrides,
+            ranking_style=args.ranking_style,
+            progress=None if args.json else _print_experiment_progress,
         )
         if args.json:
             print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
         else:
             print(
-                f"{result.status}: {result.root} - {result.pair_count} pairs, "
-                f"{result.call_count} position-swapped calls"
+                f"{result.status}: {result.root} - {result.pair_count} induced pairs, "
+                f"{result.call_count} judge calls"
             )
         return EXIT_OK
 

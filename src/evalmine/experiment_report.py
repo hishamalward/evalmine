@@ -22,6 +22,7 @@ from .workspace import PreparationError, verify_prepared
 
 REPORT_FORMAT = "evalmine-episode-report-v1"
 LABEL_FORMAT = "evalmine-human-labels-v1"
+RANKING_LABEL_FORMAT = "evalmine-human-rankings-v1"
 CHOICES = ("A", "tie", "B", "unclear")
 
 
@@ -35,12 +36,19 @@ class ExperimentReportResult:
     html: Path
     pair_count: int
     run_count: int
+    ranking_style: str
+    ranking_count: int
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "root": str(self.root),
             "html": str(self.html),
             "pair_count": self.pair_count,
+            "ranking_style": self.ranking_style,
+            "ranking_count": self.ranking_count,
+            "review_count": (
+                self.pair_count if self.ranking_style == "pairwise" else self.ranking_count
+            ),
             "run_count": self.run_count,
             "provider_runners_launched": False,
         }
@@ -138,7 +146,49 @@ def _load_validator_results(validation_dir: Path | None) -> tuple[dict[str, Any]
     return summary, results
 
 
-def _run_view(root: Path, planned: dict[str, Any], validation_exists: bool) -> dict[str, Any]:
+def _episode_prompts(root: Path, plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    index = _read_json(root / "inputs" / "index.json")
+    blobs = {
+        str(entry.get("logical")): str(entry.get("blob"))
+        for entry in index.get("entries", [])
+        if entry.get("kind") == "prompt"
+    }
+    episodes: list[dict[str, Any]] = []
+    by_episode: dict[str, list[str]] = {}
+    for episode in plan["episodes"]:
+        prompts: list[dict[str, Any]] = []
+        texts: list[str] = []
+        for turn_number, turn in enumerate(episode["turns"], 1):
+            logical = f"episode/{episode['id']}/turn/{turn_number}"
+            relative = blobs.get(logical)
+            if not relative:
+                raise ExperimentReportError(f"report input index is missing {logical}")
+            prompt = _read_text(root / "inputs" / relative)
+            texts.append(prompt)
+            prompts.append(
+                {
+                    "turn": turn_number,
+                    "prompt": prompt,
+                    "prompt_sha256": turn["prompt_sha256"],
+                }
+            )
+        by_episode[episode["id"]] = texts
+        episodes.append(
+            {
+                "id": episode["id"],
+                "title": episode.get("title"),
+                "prompts": prompts,
+            }
+        )
+    return episodes, by_episode
+
+
+def _run_view(
+    root: Path,
+    planned: dict[str, Any],
+    validation_exists: bool,
+    prompts_by_episode: dict[str, list[str]],
+) -> dict[str, Any]:
     run_key = planned["run_key"]
     prepared_dir = root / "runs" / run_key
     execution_dir = root / "execution" / "runs" / run_key
@@ -152,6 +202,7 @@ def _run_view(root: Path, planned: dict[str, Any], validation_exists: bool) -> d
             continue
         summary = _read_json(summary_path)
         final_path = execution_dir / f"turn-{index:03d}.final.txt"
+        summary["prompt"] = prompts_by_episode[run["episode"]][index - 1]
         summary["final"] = _read_text(final_path) if final_path.is_file() else ""
         turns.append(summary)
     validation_dir = root / "validation" / "runs" / run_key if validation_exists else None
@@ -217,6 +268,54 @@ def _pair_views(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return pairs
 
 
+def _outcome_label(index: int) -> str:
+    label = ""
+    value = index + 1
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        label = chr(ord("A") + remainder) + label
+    return label
+
+
+def _ranking_views(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_block: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        by_block.setdefault(run["block"], []).append(run)
+    rankings: list[dict[str, Any]] = []
+    for block, block_runs in sorted(by_block.items()):
+        run_keys = sorted(run["run_key"] for run in block_runs)
+        identity = f"{block}|{'|'.join(run_keys)}"
+        ranking_id = "ranking-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+        ordered = sorted(
+            block_runs,
+            key=lambda run: hashlib.sha256(
+                f"{ranking_id}|{run['run_key']}".encode()
+            ).hexdigest(),
+        )
+        outcomes = [
+            {
+                "label": _outcome_label(index),
+                "run_key": run["run_key"],
+                "run": run,
+            }
+            for index, run in enumerate(ordered)
+        ]
+        first = ordered[0]
+        rankings.append(
+            {
+                "ranking_id": ranking_id,
+                "block": block,
+                "episode": first["episode"],
+                "repeat": first["repeat"],
+                "outcomes": outcomes,
+                "run_key_by_label": {
+                    outcome["label"]: outcome["run_key"] for outcome in outcomes
+                },
+            }
+        )
+    return rankings
+
+
 def _arm_summaries(plan: dict[str, Any], runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     arms = {arm["id"]: arm for arm in plan["arms"]}
     summaries: list[dict[str, Any]] = []
@@ -250,7 +349,10 @@ def _arm_summaries(plan: dict[str, Any], runs: list[dict[str, Any]]) -> list[dic
 
 
 def build_experiment_report_data(
-    root: str | Path, *, generated_at: str | None = None
+    root: str | Path,
+    *,
+    generated_at: str | None = None,
+    ranking_style: str | None = None,
 ) -> dict[str, Any]:
     """Build the serializable report view after verifying its source envelopes."""
     try:
@@ -267,11 +369,22 @@ def build_experiment_report_data(
         except ValidationError as exc:
             raise ExperimentReportError(str(exc)) from exc
     plan = _read_json(resolved / "plan.json")
-    runs = [_run_view(resolved, planned, validation_exists) for planned in plan["runs"]]
+    episodes, prompts_by_episode = _episode_prompts(resolved, plan)
+    runs = [
+        _run_view(resolved, planned, validation_exists, prompts_by_episode)
+        for planned in plan["runs"]
+    ]
     pairs = _pair_views(runs)
+    rankings = _ranking_views(runs)
+    planned_ranking_style = str(plan["evaluation"].get("ranking_style", "pairwise"))
+    if ranking_style is not None and ranking_style not in {"pairwise", "n-way"}:
+        raise ExperimentReportError(f"unknown ranking style {ranking_style!r}")
+    effective_ranking_style = ranking_style or planned_ranking_style
     return {
         "format": REPORT_FORMAT,
-        "label_format": LABEL_FORMAT,
+        "label_format": (
+            LABEL_FORMAT if effective_ranking_style == "pairwise" else RANKING_LABEL_FORMAT
+        ),
         "generated_at": generated_at or _now(),
         "prepared_root": str(resolved),
         "plan_id": plan["plan_id"],
@@ -281,6 +394,10 @@ def build_experiment_report_data(
         "blind": plan["evaluation"]["blind"],
         "human": plan["evaluation"]["human"],
         "judge": plan["evaluation"]["judge"],
+        "ranking_style": effective_ranking_style,
+        "planned_ranking_style": planned_ranking_style,
+        "ranking_style_source": "operator-override" if ranking_style else "plan",
+        "episodes": episodes,
         "verification": {
             "preparation": prepared_verification,
             "execution": execution_verification,
@@ -289,7 +406,9 @@ def build_experiment_report_data(
         "runs": runs,
         "arms": _arm_summaries(plan, runs),
         "pairs": pairs,
+        "rankings": rankings,
         "pair_count": len(pairs),
+        "ranking_count": len(rankings),
         "run_count": len(runs),
     }
 
@@ -299,6 +418,28 @@ def _status(value: str) -> str:
     if value == "not-run":
         css = "muted"
     return f'<span class="status {css}">{_esc(value)}</span>'
+
+
+def _objective_check_status(run: dict[str, Any]) -> str:
+    results = run.get("validators", [])
+    if not results:
+        return '<span class="status muted">checks not run</span>'
+    passed = sum(result.get("status") == "passed" for result in results)
+    css = "pass" if passed == len(results) else "warn"
+    return f'<span class="status {css}">checks {passed}/{len(results)}</span>'
+
+
+def _billing_text(run: dict[str, Any]) -> str:
+    billing = run.get("billing", {})
+    basis = billing.get("basis")
+    cost = billing.get("reported_cost_usd")
+    if basis == "subscription":
+        return "Subscription · per-run dollar cost unavailable"
+    if basis == "api-metered" and isinstance(cost, (int, float)):
+        return f"API metered · ${cost:.4f} reported"
+    if basis == "local":
+        return "Local execution · no provider charge"
+    return "Per-run dollar cost unavailable"
 
 
 def _validator_html(result: dict[str, Any]) -> str:
@@ -349,7 +490,8 @@ def _outcome_html(label: str, run: dict[str, Any]) -> str:
     turns = "".join(
         f"<details><summary>Turn {_esc(turn['turn'])} · {_status(turn['status'])} · "
         f"{_esc(turn.get('duration_ms'))} ms · {len(turn.get('tools', []))} tools</summary>"
-        f"<pre>{_esc(turn.get('final', ''))}</pre></details>"
+        f"<h5>Prompt</h5><pre class=\"prompt\">{_esc(turn.get('prompt', ''))}</pre>"
+        f"<h5>Response</h5><pre>{_esc(turn.get('final', ''))}</pre></details>"
         for turn in run["turns"]
     )
     validators = "".join(_validator_html(result) for result in run["validators"])
@@ -370,9 +512,9 @@ def _outcome_html(label: str, run: dict[str, Any]) -> str:
     return f"""
       <article class="outcome">
         <header><div><span class="outcome-letter">Outcome {_esc(label)}</span>{identity}</div>
-          <div>{_status(run["execution_status"])} {_status(run["validation_verdict"])}</div></header>
+          <div>{_status(run["execution_status"])} {_objective_check_status(run)}</div></header>
         {error}
-        <div class="metrics"><span>{_esc(run["duration_ms"])} ms</span><span>{_esc(run["tool_count"])} tools</span><span>{_esc(run["turns_completed"])}/{_esc(run["turns_planned"])} turns</span><span>{_esc(run["billing"].get("basis"))}: {_esc(run["billing"].get("dollar_cost_status"))}</span></div>
+        <div class="metrics"><span>{_esc(run["duration_ms"])} ms</span><span>{_esc(run["tool_count"])} tools</span><span>{_esc(run["turns_completed"])}/{_esc(run["turns_planned"])} turns</span><span>{_esc(_billing_text(run))}</span></div>
         <h4>Final response</h4><pre class="final">{_esc(run["final"])}</pre>
         <details><summary>Trajectory</summary>{turns or "<p>No completed turn evidence.</p>"}</details>
         <details><summary>Objective checks</summary>{validators or "<p>Not run.</p>"}</details>
@@ -391,24 +533,76 @@ def _pair_html(pair: dict[str, Any], index: int) -> str:
     </section>"""
 
 
+def _ranking_html(ranking: dict[str, Any], index: int) -> str:
+    outcomes = "".join(
+        _outcome_html(outcome["label"], outcome["run"])
+        for outcome in ranking["outcomes"]
+    )
+    rank_options = "".join(
+        f'<option value="{rank}">{rank}</option>'
+        for rank in range(1, len(ranking["outcomes"]) + 1)
+    )
+    controls = "".join(
+        f'<label>Outcome {_esc(outcome["label"])} <select data-rank-label="{_esc(outcome["label"])}">'
+        f'<option value="">Choose rank</option>{rank_options}</select></label>'
+        for outcome in ranking["outcomes"]
+    )
+    return f"""
+    <section class="pair ranking" data-ranking="{_esc(ranking["ranking_id"])}">
+      <div class="pair-head"><div><small>Ranking {index} · {_esc(ranking["episode"])} · repeat {_esc(ranking["repeat"])}</small><h3>Rank every outcome from best to worst</h3></div><span class="saved" aria-live="polite"></span></div>
+      <div class="outcomes n-way">{outcomes}</div>
+      <div class="label-controls ranking-controls" role="group" aria-label="Rank these outcomes">
+        {controls}<button data-unclear>Mark unclear</button>
+        <label>Why? <textarea class="note" rows="2" placeholder="Optional decision note"></textarea></label>
+      </div>
+    </section>"""
+
+
+def _prompts_html(episodes: list[dict[str, Any]]) -> str:
+    return "".join(
+        f'<article class="task"><h3>{_esc(episode.get("title") or episode["id"])}</h3>'
+        + "".join(
+            f'<details open><summary>Turn {_esc(turn["turn"])} prompt</summary>'
+            f'<pre class="prompt">{_esc(turn["prompt"])}</pre></details>'
+            for turn in episode["prompts"]
+        )
+        + "</article>"
+        for episode in episodes
+    )
+
+
 def render_experiment_report_html(report: dict[str, Any]) -> str:
     """Render one self-contained responsive report and blind labeling queue."""
     arms = "".join(
         f'<div class="arm-card"><div class="identity"><b>{_esc(arm["arm"])}</b><br>'
         f"<code>{_esc(arm['runner'])}</code> · <code>{_esc(arm['model'])}</code></div>"
         f"<b>{arm['execution_succeeded']}/{arm['runs']}</b> executions succeeded<br>"
-        f"<b>{arm['validation_passed']}/{arm['runs']}</b> validations passed<br>"
+        f"<b>{arm['validation_passed']}/{arm['runs']}</b> passed all objective checks<br>"
         f"<span>{_esc(arm['median_duration_ms'])} ms median</span></div>"
         for arm in report["arms"]
     )
     pairs = "".join(_pair_html(pair, index) for index, pair in enumerate(report["pairs"], 1))
-    validation = report["verification"]["validation"]
-    validation_text = validation["verdict"] if validation else "not-run"
+    rankings = "".join(
+        _ranking_html(ranking, index) for index, ranking in enumerate(report["rankings"], 1)
+    )
+    ranking_style = report.get("ranking_style", "pairwise")
+    review_count = report["pair_count"] if ranking_style == "pairwise" else report["ranking_count"]
+    review_label = "Blind pairs" if ranking_style == "pairwise" else "Blind rankings"
+    review_unit = "pairs" if ranking_style == "pairwise" else "rankings"
+    style_note = (
+        f"operator override of planned {_esc(report['planned_ranking_style'])} style"
+        if report.get("ranking_style_source") == "operator-override"
+        else "declared in the experiment plan"
+    )
+    execution_passed = sum(run["execution_status"] == "succeeded" for run in report["runs"])
+    validation_passed = sum(run["validation_verdict"] == "passed" for run in report["runs"])
+    prompt_cards = _prompts_html(report["episodes"])
     data = {
         "format": report["format"],
         "label_format": report["label_format"],
         "plan_id": report["plan_id"],
         "experiment": report["experiment"],
+        "ranking_style": ranking_style,
         "pairs": [
             {
                 "pair_id": pair["pair_id"],
@@ -421,33 +615,53 @@ def render_experiment_report_html(report: dict[str, Any]) -> str:
             }
             for pair in report["pairs"]
         ],
+        "rankings": [
+            {
+                "ranking_id": ranking["ranking_id"],
+                "block": ranking["block"],
+                "episode": ranking["episode"],
+                "repeat": ranking["repeat"],
+                "outcomes": [
+                    {"label": outcome["label"], "run_key": outcome["run_key"]}
+                    for outcome in ranking["outcomes"]
+                ],
+            }
+            for ranking in report["rankings"]
+        ],
     }
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_esc(report["experiment"])} · evalmine episode evidence</title><style>{_CSS}</style></head>
 <body data-reveal="0"><header class="hero"><div><div class="eyebrow">evalmine · episode evidence</div><h1>{_esc(report["question"])}</h1><p>{_esc(report["experiment"])} · plan <code>{_esc(report["plan_id"])}</code></p></div>
 <button id="reveal" aria-pressed="false">Reveal identities</button></header>
-<main><section class="summary"><div><small>Runs</small><b>{report["run_count"]}</b></div><div><small>Blind pairs</small><b>{report["pair_count"]}</b></div><div><small>Execution</small><b>{_esc(report["verification"]["execution"]["status"])}</b></div><div><small>Validation</small><b>{_esc(validation_text)}</b></div></section>
-<section><div class="section-head"><div><div class="eyebrow">Experiment</div><h2>What is being decided</h2></div><div id="progress">0 labeled of {report["pair_count"]} pairs</div></div><p class="question">{_esc(report["question"])}</p><ul>{"".join(f"<li>{_esc(item)}</li>" for item in report["objectives"])}</ul><div class="arms">{arms}</div></section>
-<section><div class="section-head"><div><div class="eyebrow">Blind review queue</div><h2>Compare trajectory evidence, then label</h2></div><div class="actions"><button id="export">Export labels JSON</button><label class="import">Import labels<input id="import" type="file" accept="application/json"></label></div></div>
-<div class="notice">Identities are hidden by default. Execution status, objective checks, trajectory, diffs, and final responses remain visible because they are the evidence being judged.</div>{pairs or "<p>No comparable run pairs.</p>"}</section>
+<main><section class="summary"><div><small>Runs</small><b>{report["run_count"]}</b></div><div><small>{review_label}</small><b>{review_count}</b></div><div><small>Execution</small><b>{execution_passed}/{report["run_count"]} complete</b></div><div><small>Objective checks</small><b>{validation_passed}/{report["run_count"]} passed all</b></div></section>
+<section><div class="section-head"><div><div class="eyebrow">Experiment</div><h2>What is being decided</h2></div><div id="progress">0 labeled of {review_count} {review_unit}</div></div><p class="question">{_esc(report["question"])}</p><ul>{"".join(f"<li>{_esc(item)}</li>" for item in report["objectives"])}</ul><div class="arms">{arms}</div></section>
+<section><div class="section-head"><div><div class="eyebrow">Shared task</div><h2>Prompts given identically to every model</h2></div></div>{prompt_cards}</section>
+<section><div class="section-head"><div><div class="eyebrow">Blind review queue</div><h2>{'Rank all outcomes together' if ranking_style == 'n-way' else 'Compare trajectory evidence, then label'}</h2></div><div class="actions"><button id="export">Export labels JSON</button><label class="import">Import labels<input id="import" type="file" accept="application/json"></label></div></div>
+<div class="notice">Ranking style: <b>{_esc(ranking_style)}</b> ({style_note}). Identities are hidden by default. Mechanical objective checks are evidence annotations, not automatic exclusions.</div>{rankings if ranking_style == "n-way" else (pairs or "<p>No comparable run pairs.</p>")}</section>
 </main><footer>Generated {_esc(report["generated_at"])} · self-contained · no external assets</footer>
 <script type="application/json" id="evalmine-episode-data">{_json_blob(data)}</script><script>{_JS}</script></body></html>"""
 
 
 def generate_experiment_report(
-    root: str | Path, *, generated_at: str | None = None
+    root: str | Path,
+    *,
+    generated_at: str | None = None,
+    ranking_style: str | None = None,
+    output: str | Path | None = None,
 ) -> ExperimentReportResult:
     """Create one report envelope without launching a provider or modifying workspaces."""
-    report = build_experiment_report_data(root, generated_at=generated_at)
+    report = build_experiment_report_data(
+        root, generated_at=generated_at, ranking_style=ranking_style
+    )
     prepared_root = Path(root).resolve()
-    report_root = prepared_root / "report"
+    report_root = Path(output).resolve() if output is not None else prepared_root / "report"
     if report_root.exists() or report_root.is_symlink():
         raise ExperimentReportError(
             f"report evidence already exists at {report_root}; it is never overwritten"
         )
     html_text = render_experiment_report_html(report)
-    report_root.mkdir()
+    report_root.mkdir(parents=True)
     _write_once(report_root / "data.json", _json_bytes(report))
     _write_once(report_root / "index.html", html_text.encode("utf-8"))
     marker = {
@@ -457,6 +671,10 @@ def generate_experiment_report(
         "generated_at": report["generated_at"],
         "run_count": report["run_count"],
         "pair_count": report["pair_count"],
+        "ranking_count": report["ranking_count"],
+        "ranking_style": report["ranking_style"],
+        "planned_ranking_style": report["planned_ranking_style"],
+        "ranking_style_source": report["ranking_style_source"],
         "provider_runners_launched": False,
         "evidence_sha256": _report_hashes(report_root),
     }
@@ -466,6 +684,8 @@ def generate_experiment_report(
         report_root / "index.html",
         report["pair_count"],
         report["run_count"],
+        report["ranking_style"],
+        report["ranking_count"],
     )
 
 
@@ -498,6 +718,7 @@ def verify_experiment_report(root: str | Path) -> dict[str, Any]:
 
 
 _CSS = r"""
+.status.warn{color:var(--orange);background:#fff0dc}.task{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:12px 0}.task h3{margin-top:0}.prompt{background:#25332e}.outcomes.n-way{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.ranking-controls select{font:inherit;border:1px solid var(--line);border-radius:7px;padding:7px;background:var(--paper);color:var(--ink)}.ranking-controls>label:not(:last-child){margin-left:0}
 :root{--bg:#f4f1e8;--paper:#fffdf7;--ink:#18211e;--muted:#66716d;--line:#d8d6cc;--green:#2e705b;--green-soft:#e4f0e9;--red:#a04635;--red-soft:#f7e8e3;--orange:#a96532;--shadow:0 14px 40px #24362e18;color-scheme:light dark}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}button,.import{font:inherit}code,pre{font-family:"SFMono-Regular",Consolas,monospace}.hero{background:#15211d;color:#f8faf8;padding:32px max(24px,calc((100vw - 1320px)/2));display:flex;justify-content:space-between;gap:24px;align-items:end}.hero h1{font-size:clamp(26px,4vw,48px);line-height:1.05;max-width:900px;margin:8px 0 10px}.hero p{color:#a9b9b3}.eyebrow{text-transform:uppercase;letter-spacing:.16em;font:700 11px monospace;color:#d59763}button,.import{border:1px solid #73817c;background:#fff;color:#18211e;border-radius:9px;padding:9px 12px;cursor:pointer}.hero button{background:#263832;color:white;border-color:#4c665d}main{max-width:1320px;margin:auto;padding:28px 24px 100px}section{margin:26px 0}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:-52px;position:relative}.summary>div{background:var(--paper);border:1px solid var(--line);border-radius:13px;padding:16px;box-shadow:var(--shadow)}.summary small{display:block;color:var(--muted)}.summary b{font-size:24px}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:end}.section-head h2{margin:4px 0}.question{font-size:18px}.arms{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}.arm-card{background:var(--paper);border:1px solid var(--line);padding:14px;border-radius:12px}.identity{display:none;color:var(--orange);margin:4px 0 8px}body[data-reveal="1"] .identity{display:block}.actions{display:flex;gap:8px;align-items:center}.import input{display:none}.notice{padding:12px 14px;border-left:4px solid var(--orange);background:#fff4e8;margin:14px 0}.pair{background:var(--paper);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow);margin:18px 0}.pair-head{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.pair-head h3{margin:3px 0}.saved{color:var(--green)}.outcomes{display:grid;grid-template-columns:1fr 1fr}.outcome{padding:18px;min-width:0;border-right:1px solid var(--line)}.outcome:last-child{border-right:0}.outcome header{display:flex;justify-content:space-between;gap:8px}.outcome-letter{font-size:19px;font-weight:800}.status{display:inline-block;border-radius:99px;padding:3px 7px;font:700 10px monospace;text-transform:uppercase}.status.pass{color:var(--green);background:var(--green-soft)}.status.fail{color:var(--red);background:var(--red-soft)}.status.muted{color:var(--muted);background:#eee}.metrics{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}.metrics span{background:#f0eee7;padding:4px 7px;border-radius:6px;font:11px monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#18211e;color:#dce7e2;border-radius:9px;padding:13px;max-height:420px;overflow:auto}.final{min-height:150px}.stderr{color:#ffb7a8}.error{background:var(--red-soft);color:var(--red);padding:9px;margin:9px 0;border-radius:7px}details{border-top:1px solid var(--line);padding:9px 0}summary{cursor:pointer;font-weight:700}details small{color:var(--muted)}.label-controls{border-top:1px solid var(--line);padding:14px 18px;background:#f1eee5;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.label-controls button.selected{background:var(--green);color:white;border-color:var(--green)}.label-controls label{margin-left:auto;display:flex;align-items:center;gap:8px}.note{width:min(420px,40vw);border:1px solid var(--line);border-radius:8px;padding:8px;background:white;color:#18211e}footer{text-align:center;color:var(--muted);padding:30px}.muted{color:var(--muted)}
 @media(prefers-color-scheme:dark){:root{--bg:#0f1513;--paper:#17201d;--ink:#e4ebe8;--muted:#9aaba5;--line:#34423d;--green:#7ac6a8;--green-soft:#19382e;--red:#ee9b85;--red-soft:#3a211d;--orange:#e3a36f;--shadow:none}.notice{background:#2b241b}.metrics span,.label-controls{background:#202b27}.note,button,.import{background:#202b27;color:#e4ebe8}.status.muted{background:#2b3531}}
@@ -508,14 +729,16 @@ _CSS = r"""
 _JS = r"""
 (()=>{'use strict';
 const data=JSON.parse(document.getElementById('evalmine-episode-data').textContent);
-const key='evalmine:episode-labels:'+data.plan_id;let labels={};
+const style=data.ranking_style||'pairwise',key='evalmine:episode-labels:'+style+':'+data.plan_id;let labels={};
 try{labels=JSON.parse(localStorage.getItem(key)||'{}')||{}}catch(e){labels={}}
-const cards=[...document.querySelectorAll('[data-pair]')];
+const pairCards=[...document.querySelectorAll('[data-pair]')],rankingCards=[...document.querySelectorAll('[data-ranking]')];
+function rankingComplete(row,outcomes){if(row.unclear)return true;const values=Object.values(row.ranks||{}).map(Number);return values.length===outcomes.length&&new Set(values).size===outcomes.length&&values.every(value=>value>=1&&value<=outcomes.length)}
 function save(){try{localStorage.setItem(key,JSON.stringify(labels))}catch(e){}render()}
-function render(){let done=0;for(const card of cards){const id=card.dataset.pair,row=labels[id]||{};if(row.choice)done++;for(const button of card.querySelectorAll('[data-choice]'))button.classList.toggle('selected',button.dataset.choice===row.choice);const note=card.querySelector('.note');if(document.activeElement!==note)note.value=row.note||'';card.querySelector('.saved').textContent=row.choice?'saved locally':''}document.getElementById('progress').textContent=done+' labeled of '+cards.length+' pairs'}
-for(const card of cards){const id=card.dataset.pair;for(const button of card.querySelectorAll('[data-choice]'))button.addEventListener('click',()=>{labels[id]={...(labels[id]||{}),choice:button.dataset.choice,labelled_at:new Date().toISOString()};save()});card.querySelector('.note').addEventListener('input',e=>{labels[id]={...(labels[id]||{}),note:e.target.value};save()})}
+function render(){let done=0;for(const card of pairCards){const id=card.dataset.pair,row=labels[id]||{};if(row.choice)done++;for(const button of card.querySelectorAll('[data-choice]'))button.classList.toggle('selected',button.dataset.choice===row.choice);const note=card.querySelector('.note');if(document.activeElement!==note)note.value=row.note||'';card.querySelector('.saved').textContent=row.choice?'saved locally':''}for(const card of rankingCards){const id=card.dataset.ranking,row=labels[id]||{},ranking=data.rankings.find(item=>item.ranking_id===id);if(rankingComplete(row,ranking.outcomes))done++;for(const select of card.querySelectorAll('[data-rank-label]'))if(document.activeElement!==select)select.value=String((row.ranks||{})[select.dataset.rankLabel]||'');const unclear=card.querySelector('[data-unclear]');unclear.classList.toggle('selected',Boolean(row.unclear));unclear.textContent=row.unclear?'Unclear selected':'Mark unclear';const note=card.querySelector('.note');if(document.activeElement!==note)note.value=row.note||'';card.querySelector('.saved').textContent=rankingComplete(row,ranking.outcomes)?'saved locally':''}const total=style==='n-way'?rankingCards.length:pairCards.length;document.getElementById('progress').textContent=done+' labeled of '+total+' '+(style==='n-way'?'rankings':'pairs')}
+for(const card of pairCards){const id=card.dataset.pair;for(const button of card.querySelectorAll('[data-choice]'))button.addEventListener('click',()=>{labels[id]={...(labels[id]||{}),choice:button.dataset.choice,labelled_at:new Date().toISOString()};save()});card.querySelector('.note').addEventListener('input',e=>{labels[id]={...(labels[id]||{}),note:e.target.value};save()})}
+for(const card of rankingCards){const id=card.dataset.ranking;for(const select of card.querySelectorAll('[data-rank-label]'))select.addEventListener('change',()=>{const row=labels[id]||{},ranks={...(row.ranks||{})},value=Number(select.value),label=select.dataset.rankLabel;if(value){for(const [other,rank] of Object.entries(ranks))if(other!==label&&Number(rank)===value)delete ranks[other];ranks[label]=value}else delete ranks[label];labels[id]={...row,ranks,unclear:false,labelled_at:new Date().toISOString()};save()});card.querySelector('[data-unclear]').addEventListener('click',()=>{const row=labels[id]||{};labels[id]={...row,ranks:{},unclear:!row.unclear,labelled_at:new Date().toISOString()};save()});card.querySelector('.note').addEventListener('input',e=>{labels[id]={...(labels[id]||{}),note:e.target.value};save()})}
 const reveal=document.getElementById('reveal');reveal.addEventListener('click',()=>{const shown=document.body.dataset.reveal==='1';document.body.dataset.reveal=shown?'0':'1';reveal.setAttribute('aria-pressed',shown?'false':'true');reveal.textContent=shown?'Reveal identities':'Hide identities'});
-document.getElementById('export').addEventListener('click',()=>{const rows=[];for(const pair of data.pairs){const row=labels[pair.pair_id];if(!row||!row.choice)continue;rows.push({pair_id:pair.pair_id,block:pair.block,episode:pair.episode,repeat:pair.repeat,a_run_key:pair.a_run_key,b_run_key:pair.b_run_key,choice:row.choice,preferred_run_key:pair.preferred_run_by_choice[row.choice],note:row.note||null,labelled_at:row.labelled_at||null,identities_revealed:document.body.dataset.reveal==='1'})}const payload={format:data.label_format,plan_id:data.plan_id,experiment:data.experiment,exported_at:new Date().toISOString(),labels:rows};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=data.experiment+'-'+data.plan_id+'-labels.json';a.click();URL.revokeObjectURL(url)});
-document.getElementById('import').addEventListener('change',event=>{const file=event.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const payload=JSON.parse(reader.result);if(payload.format!==data.label_format||payload.plan_id!==data.plan_id)throw new Error('Labels belong to a different plan.');const known=new Set(data.pairs.map(pair=>pair.pair_id));for(const row of payload.labels||[]){if(known.has(row.pair_id)&&['A','B','tie','unclear'].includes(row.choice))labels[row.pair_id]={choice:row.choice,note:row.note||'',labelled_at:row.labelled_at||null}}save()}catch(error){alert('Could not import labels: '+error.message)}};reader.readAsText(file);event.target.value=''});render();
+document.getElementById('export').addEventListener('click',()=>{let payload;if(style==='n-way'){const rows=[];for(const ranking of data.rankings){const row=labels[ranking.ranking_id]||{};if(!rankingComplete(row,ranking.outcomes))continue;const order=row.unclear?[]:[...ranking.outcomes].sort((a,b)=>Number(row.ranks[a.label])-Number(row.ranks[b.label])).map(item=>item.label);const byLabel=Object.fromEntries(ranking.outcomes.map(item=>[item.label,item.run_key]));rows.push({ranking_id:ranking.ranking_id,block:ranking.block,episode:ranking.episode,repeat:ranking.repeat,order,ranked_run_keys:order.map(label=>byLabel[label]),unclear:Boolean(row.unclear),note:row.note||null,labelled_at:row.labelled_at||null,identities_revealed:document.body.dataset.reveal==='1'})}payload={format:data.label_format,ranking_style:style,plan_id:data.plan_id,experiment:data.experiment,exported_at:new Date().toISOString(),rankings:rows}}else{const rows=[];for(const pair of data.pairs){const row=labels[pair.pair_id];if(!row||!row.choice)continue;rows.push({pair_id:pair.pair_id,block:pair.block,episode:pair.episode,repeat:pair.repeat,a_run_key:pair.a_run_key,b_run_key:pair.b_run_key,choice:row.choice,preferred_run_key:pair.preferred_run_by_choice[row.choice],note:row.note||null,labelled_at:row.labelled_at||null,identities_revealed:document.body.dataset.reveal==='1'})}payload={format:data.label_format,ranking_style:style,plan_id:data.plan_id,experiment:data.experiment,exported_at:new Date().toISOString(),labels:rows}}const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=data.experiment+'-'+data.plan_id+'-'+(style==='n-way'?'rankings':'labels')+'.json';a.click();URL.revokeObjectURL(url)});
+document.getElementById('import').addEventListener('change',event=>{const file=event.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const payload=JSON.parse(reader.result);if(payload.format!==data.label_format||payload.plan_id!==data.plan_id)throw new Error('Labels belong to a different plan or ranking style.');if(style==='n-way'){const known=new Map(data.rankings.map(item=>[item.ranking_id,item]));for(const row of payload.rankings||[]){const ranking=known.get(row.ranking_id);if(!ranking)continue;const expected=ranking.outcomes.map(item=>item.label).sort(),order=(row.order||[]).map(String);if(!row.unclear&&(order.length!==expected.length||order.slice().sort().join('|')!==expected.join('|')))throw new Error('A ranking must contain every outcome exactly once.');labels[row.ranking_id]={unclear:Boolean(row.unclear),ranks:Object.fromEntries(order.map((label,index)=>[label,index+1])),note:row.note||'',labelled_at:row.labelled_at||null}}}else{const known=new Set(data.pairs.map(pair=>pair.pair_id));for(const row of payload.labels||[]){if(known.has(row.pair_id)&&['A','B','tie','unclear'].includes(row.choice))labels[row.pair_id]={choice:row.choice,note:row.note||'',labelled_at:row.labelled_at||null}}}save()}catch(error){alert('Could not import labels: '+error.message)}};reader.readAsText(file);event.target.value=''});render();
 })();
 """

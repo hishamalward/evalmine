@@ -23,6 +23,7 @@ EXPERIMENT_FORMAT_VERSION = 2
 DEFAULT_ORDER = "rotate"
 DEFAULT_MAX_PARALLEL = 1
 DEFAULT_REPEATS = 1
+DEFAULT_RANKING_STYLE = "pairwise"
 
 _SCHEMA_PATH = Path(__file__).with_name("experiment.schema.json")
 
@@ -126,6 +127,7 @@ class ValidatorSpec:
 class Evaluation:
     objectives: tuple[str, ...]
     blind: str
+    ranking_style: str
     human_required: bool
     labels_per_pair: int
     judge: dict[str, Any]
@@ -254,6 +256,7 @@ class ExperimentPlan:
             "evaluation": {
                 "objectives": list(experiment.evaluation.objectives),
                 "blind": experiment.evaluation.blind,
+                "ranking_style": experiment.evaluation.ranking_style,
                 "human": {
                     "required": experiment.evaluation.human_required,
                     "labels_per_pair": experiment.evaluation.labels_per_pair,
@@ -357,6 +360,26 @@ def _validate_validator_references(doc: dict[str, Any], path: Path) -> None:
                 )
 
 
+def _validate_ranking_contract(doc: dict[str, Any], path: Path) -> None:
+    evaluation = doc["evaluation"]
+    style = evaluation.get("ranking_style", DEFAULT_RANKING_STYLE)
+    judge = evaluation["judge"]
+    if not judge.get("enabled"):
+        return
+    pairwise = bool(judge.get("pairwise"))
+    position_swap = bool(judge.get("position_swap"))
+    if style == "pairwise" and (not pairwise or not position_swap):
+        raise ExperimentError(
+            f"{path}: pairwise ranking requires judge.pairwise=true and "
+            "judge.position_swap=true"
+        )
+    if style == "n-way" and (pairwise or position_swap):
+        raise ExperimentError(
+            f"{path}: n-way ranking requires judge.pairwise=false and "
+            "judge.position_swap=false; one judge call ranks every arm together"
+        )
+
+
 def _existing_file(manifest: Path, declared: str, where: str) -> Path:
     resolved = (manifest.parent / declared).resolve()
     if not resolved.is_file():
@@ -428,6 +451,7 @@ def load_experiment(path: str | Path) -> Experiment:
     _unique_ids(doc["arms"], "arm", path)
     _unique_ids(doc["episodes"], "episode", path)
     _validate_validator_references(doc, path)
+    _validate_ranking_contract(doc, path)
 
     repo_declared = doc["seed"]["repo"]
     repo = (path.parent / repo_declared).resolve()
@@ -530,6 +554,7 @@ def load_experiment(path: str | Path) -> Experiment:
         evaluation=Evaluation(
             objectives=tuple(raw_evaluation["objectives"]),
             blind=raw_evaluation["blind"],
+            ranking_style=raw_evaluation.get("ranking_style", DEFAULT_RANKING_STYLE),
             human_required=bool(raw_human["required"]),
             labels_per_pair=int(raw_human.get("labels_per_pair", 1)),
             judge=dict(raw_evaluation["judge"]),

@@ -111,7 +111,7 @@ an evidenced working directory and safe literal environment.
 
 ### Phase 5 — evidence, labeling, reporting, and MCP (implemented)
 
-- [x] Generalize the current pairwise judge and calibration layer to episode artifacts.
+- [x] Generalize judging and calibration to configurable pairwise or N-way episode rankings.
 - [x] Preserve position-swapped judging and Cohen's kappa against human labels.
 - [x] Build a static HTML labeling queue with blind reveal, resumable local labels,
   and plan-scoped JSON export/import.

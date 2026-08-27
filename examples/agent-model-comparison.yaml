@@ -76,6 +76,7 @@ episodes:
     repeats: 1
 
 evaluation:
+  ranking_style: n-way
   objectives:
     - Correct understanding of the repository
     - Fit to the stated real-world workflows
@@ -87,8 +88,8 @@ evaluation:
     labels_per_pair: 1
   judge:
     enabled: true
-    pairwise: true
-    position_swap: true
+    pairwise: false
+    position_swap: false
     calibrate: true
     runner: claude-code
     model: claude-fable-5
