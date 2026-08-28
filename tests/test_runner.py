@@ -1273,6 +1273,35 @@ def test_n_way_report_judge_and_human_ranking_use_one_call(
         assert judged["pair_count"] == 3
         assert all(row["status"] == "scored" for row in judged["pairs"])
 
+        sol_judging = tmp_path / "sol-judging"
+
+        def sol_judge_call(_prompt: str) -> EpisodeJudgeCall:
+            return EpisodeJudgeCall(
+                text=json.dumps(
+                    {"ranking": list(reversed(order)), "reason": "second judge ordering"}
+                ),
+                latency_ms=9,
+                input_tokens=12,
+                output_tokens=4,
+                cost_usd=0.002,
+                raw="safe second N-way judge evidence",
+                observed_model="sol-test",
+            )
+
+        second = judge_experiment(
+            prepared.root,
+            allow_provider_calls=False,
+            caller=sol_judge_call,
+            runner_override="codex-cli",
+            model_override="sol-test",
+            output=sol_judging,
+        )
+        assert second.call_count == 1
+        assert verify_judging(prepared.root, sol_judging)["call_count"] == 1
+        sol_payload = json.loads((sol_judging / "pairs.json").read_text())
+        assert sol_payload["runner_source"] == "operator-override"
+        assert sol_payload["model_source"] == "operator-override"
+
         label_path = tmp_path / "rankings.json"
         ranked_run_keys = [ranking["run_key_by_label"][label] for label in order]
         label_path.write_text(
@@ -1295,14 +1324,29 @@ def test_n_way_report_judge_and_human_ranking_use_one_call(
             ),
             encoding="utf-8",
         )
-        decision = generate_decision_report(prepared.root, [label_path])
+        decision_root = tmp_path / "multi-judge-decision"
+        decision = generate_decision_report(
+            prepared.root,
+            [label_path],
+            judging_paths=[prepared.root / "judging", sol_judging],
+            output=decision_root,
+        )
         assert decision.labelled_pairs == 3
         assert decision.judged_pairs == 3
+        assert verify_decision(prepared.root, decision_root)["judged_pairs"] == 3
         decision_html = decision.html.read_text()
         assert "Induced pair evidence" in decision_html
         assert "Full N-way judgment" in decision_html
         assert "Human and judge orderings" in decision_html
         assert "Judge execution identity" in decision_html
+        assert "sol-test ranking" in decision_html
+        assert "second judge ordering" in decision_html
+        decision_data = json.loads((decision_root / "data.json").read_text())
+        assert decision_data["judge_count"] == 2
+        assert [lane["model"] for lane in decision_data["judges"]] == [
+            "codex-judge-test",
+            "sol-test",
+        ]
         assert "safe N-way judge evidence" not in decision_html
     finally:
         if prepared.root.exists():

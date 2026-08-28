@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import stat
 import time
 from collections.abc import Callable, Sequence
@@ -27,6 +28,7 @@ from .experiment_report import (
     CHOICES,
     LABEL_FORMAT,
     RANKING_LABEL_FORMAT,
+    _api_list_price_equivalent,
     build_experiment_report_data,
 )
 from .metrics import (
@@ -41,11 +43,13 @@ from .metrics import (
     seed_from_suite_hash,
     win_rate,
 )
-from .prices import PriceTable, load_price_table
+from .prices import PriceTable, PriceTableError, load_price_table
 from .runner import (
     ProcessDriver,
     RunnerError,
     _child_env,
+    _codex_home,
+    _codex_rollout_identity,
     _normalize_events,
     _parse_events,
     _redact_secrets,
@@ -111,6 +115,7 @@ class EpisodeJudgeCall:
     cost_usd: float | None = None
     raw: str = ""
     observed_model: str | None = None
+    observed_model_source: str | None = None
     meter_equivalent_usd: float | None = None
     model_usage: dict[str, Any] | None = None
     auxiliary_models: tuple[str, ...] = ()
@@ -296,6 +301,7 @@ def _parse_ranking_call(call: EpisodeJudgeCall, ranking: dict[str, Any]) -> dict
         "output_tokens": call.output_tokens,
         "cost_usd": call.cost_usd,
         "observed_model": call.observed_model,
+        "observed_model_source": call.observed_model_source,
         "meter_equivalent_usd": call.meter_equivalent_usd,
         "model_usage": call.model_usage,
         "auxiliary_models": list(call.auxiliary_models),
@@ -324,6 +330,7 @@ def _parse_judge_call(call: EpisodeJudgeCall, order: int) -> dict[str, Any]:
             "output_tokens": call.output_tokens,
             "cost_usd": call.cost_usd,
             "observed_model": call.observed_model,
+            "observed_model_source": call.observed_model_source,
             "meter_equivalent_usd": call.meter_equivalent_usd,
             "model_usage": call.model_usage,
             "auxiliary_models": list(call.auxiliary_models),
@@ -346,6 +353,7 @@ def _parse_judge_call(call: EpisodeJudgeCall, order: int) -> dict[str, Any]:
         "output_tokens": call.output_tokens,
         "cost_usd": call.cost_usd,
         "observed_model": call.observed_model,
+        "observed_model_source": call.observed_model_source,
         "meter_equivalent_usd": call.meter_equivalent_usd,
         "model_usage": call.model_usage,
         "auxiliary_models": list(call.auxiliary_models),
@@ -398,6 +406,7 @@ class _ApiJudge:
             output_tokens=response.output_tokens,
             cost_usd=cost,
             observed_model=self.model_id,
+            observed_model_source="api-response",
             meter_equivalent_usd=cost,
         )
 
@@ -504,9 +513,19 @@ class _SubscriptionJudge:
         events, malformed = _parse_events(stdout)
         if malformed:
             raise RunnerError("episode judge emitted malformed JSONL")
-        _session, observed, final, _tools, normalized = _normalize_events(
+        session, observed, final, _tools, normalized = _normalize_events(
             self.runner, events
         )
+        observed_source = "runner-event" if observed is not None else None
+        if self.runner == "codex-cli" and session is not None and observed is None:
+            runtime_identity = _codex_rollout_identity(
+                session,
+                _codex_home(dict(os.environ)),
+            )
+            runtime_model = runtime_identity.get("observed_model")
+            if isinstance(runtime_model, str) and runtime_model:
+                observed = runtime_model
+                observed_source = str(runtime_identity.get("source"))
         if not final:
             raise RunnerError("episode judge emitted no final response")
         usage = normalized["usage"]
@@ -518,6 +537,7 @@ class _SubscriptionJudge:
             output_tokens=usage.get("output_tokens") or usage.get("completion_tokens"),
             cost_usd=None,
             observed_model=observed,
+            observed_model_source=observed_source,
             meter_equivalent_usd=(
                 float(usage["reported_cost_usd"])
                 if isinstance(usage.get("reported_cost_usd"), (int, float))
@@ -557,6 +577,9 @@ def judge_experiment(
     driver: ProcessDriver | None = None,
     executable_overrides: dict[str, str] | None = None,
     ranking_style: str | None = None,
+    runner_override: str | None = None,
+    model_override: str | None = None,
+    output: str | Path | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> JudgingResult:
     """Run the preregistered pairwise or N-way episode judging protocol."""
@@ -590,11 +613,11 @@ def judge_experiment(
         ]
     else:
         raise JudgeRefused(f"unknown ranking style {ranking_style!r}")
-    judging_root = prepared / "judging"
+    judging_root = Path(output).resolve() if output is not None else prepared / "judging"
     if judging_root.exists() or judging_root.is_symlink():
         raise JudgeRefused(f"judging evidence already exists at {judging_root}")
-    runner = str(config.get("runner") or "")
-    model = str(config.get("model") or "")
+    runner = str(runner_override or config.get("runner") or "")
+    model = str(model_override or config.get("model") or "")
     max_tokens = int(config.get("max_tokens", DEFAULT_JUDGE_MAX_TOKENS))
     price_table: PriceTable | None = None
     estimate: float | None = None
@@ -647,9 +670,11 @@ def judge_experiment(
                 schema=schema,
                 system=system,
             )
+            judging_root.parent.mkdir(parents=True, exist_ok=True)
             judging_root.mkdir()
             _write_read_only(schema_path, _json_bytes(schema))
     if not judging_root.exists():
+        judging_root.parent.mkdir(parents=True, exist_ok=True)
         judging_root.mkdir()
     rows: list[dict[str, Any]] = []
     ranking_rows: list[dict[str, Any]] = []
@@ -801,9 +826,12 @@ def judge_experiment(
         "plan_id": report["plan_id"],
         "runner": runner,
         "model": model,
+        "runner_source": "operator-override" if runner_override else "plan",
+        "model_source": "operator-override" if model_override else "plan",
         "ranking_style": ranking_style,
         "planned_ranking_style": report["planned_ranking_style"],
         "ranking_style_source": report["ranking_style_source"],
+        "artifact_location": "operator-output" if output is not None else "prepared-default",
         "billing_basis": "api" if runner == "api-prompt" else "subscription-or-local",
         "estimated_cost_usd": estimate,
         "cost_usd": total_cost if cost_complete else None,
@@ -841,9 +869,13 @@ def judge_experiment(
     return JudgingResult(judging_root, len(rows), call_index, "completed")
 
 
-def verify_judging(root: str | Path) -> dict[str, Any]:
+def verify_judging(
+    root: str | Path, judging_path: str | Path | None = None
+) -> dict[str, Any]:
     prepared = Path(verify_prepared(root)["root"])
-    judging_root = prepared / "judging"
+    judging_root = (
+        Path(judging_path).resolve() if judging_path is not None else prepared / "judging"
+    )
     marker = _read_json(judging_root / "judging.json")
     if marker.get("format") != JUDGING_FORMAT or marker.get("prepared_root") != str(prepared):
         raise DecisionError("judging marker does not match this prepared experiment")
@@ -1104,18 +1136,28 @@ def _judging_call_rows(judging: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _judge_runtime_summary(prepared: Path, judging: dict[str, Any] | None) -> dict[str, Any]:
+def _judge_runtime_summary(
+    prepared: Path,
+    judging: dict[str, Any] | None,
+    *,
+    judging_root: Path | None = None,
+) -> dict[str, Any]:
     if judging is None:
         return {"status": "not-run", "calls": []}
+    evidence_root = judging_root or prepared / "judging"
     calls: list[dict[str, Any]] = []
     for row in _judging_call_rows(judging):
         observed = row.get("observed_model")
         model_usage = row.get("model_usage") if isinstance(row.get("model_usage"), dict) else {}
         auxiliary = list(row.get("auxiliary_models") or [])
         meter_equivalent = row.get("meter_equivalent_usd")
+        meter_equivalent_source = (
+            "judge-artifact" if isinstance(meter_equivalent, (int, float)) else None
+        )
+        usage: dict[str, Any] = {}
         raw_relative = row.get("raw")
         if isinstance(raw_relative, str):
-            raw_path = prepared / "judging" / raw_relative
+            raw_path = evidence_root / raw_relative
             try:
                 raw_text = raw_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -1131,12 +1173,30 @@ def _judge_runtime_summary(prepared: Path, judging: dict[str, Any] | None) -> di
                 usage = normalized.get("usage", {})
                 if isinstance(usage.get("reported_cost_usd"), (int, float)):
                     meter_equivalent = float(usage["reported_cost_usd"])
+                    meter_equivalent_source = "runner-reported"
+        if meter_equivalent is None and usage:
+            try:
+                estimate = _api_list_price_equivalent(
+                    {
+                        "runner": judging.get("runner"),
+                        "requested_model": judging.get("model"),
+                        "billing": {"basis": "subscription"},
+                        "turns": [{"usage": usage}],
+                    },
+                    load_price_table(),
+                )
+            except PriceTableError:
+                estimate = {"status": "unavailable"}
+            if estimate.get("status") == "estimated":
+                meter_equivalent = float(estimate["usd"])
+                meter_equivalent_source = "reported-tokens-times-pinned-api-prices"
         calls.append(
             {
                 "observed_model": observed,
                 "auxiliary_models": auxiliary,
                 "model_usage": model_usage,
                 "meter_equivalent_usd": meter_equivalent,
+                "meter_equivalent_source": meter_equivalent_source,
                 "latency_ms": row.get("latency_ms"),
                 "raw": raw_relative,
             }
@@ -1221,24 +1281,17 @@ def _n_way_review(
     return {"human": human, "judge": judge}
 
 
-def build_decision_data(
-    root: str | Path, label_paths: Sequence[str | Path], *, generated_at: str | None = None
+def _analyze_judging(
+    prepared: Path,
+    report: dict[str, Any],
+    consensus: dict[str, str],
+    judging: dict[str, Any],
+    artifact_root: Path,
 ) -> dict[str, Any]:
-    prepared = Path(verify_prepared(root)["root"])
-    report = build_experiment_report_data(prepared)
-    labels, sources = _load_human_labels(label_paths, report)
-    consensus = _consensus(labels)
-    judging = None
-    judge_pairs: dict[str, dict[str, Any]] = {}
-    if (prepared / "judging").is_dir():
-        verify_judging(prepared)
-        judging = _read_json(prepared / "judging" / "pairs.json")
-        judge_pairs = {row["pair_id"]: row for row in judging["pairs"]}
-    judge_runtime = _judge_runtime_summary(prepared, judging)
-    n_way_review = _n_way_review(report, label_paths, judging)
-    calibration_rows = []
-    task_rows = []
-    disagreements = []
+    judge_pairs = {row["pair_id"]: row for row in judging["pairs"]}
+    calibration_rows: list[tuple[str, str]] = []
+    task_rows: list[tuple[str, str, str]] = []
+    disagreements: list[dict[str, Any]] = []
     for pair_id, human in consensus.items():
         judged = judge_pairs.get(pair_id)
         if human == "unclear" or not judged or judged.get("score") is None:
@@ -1257,8 +1310,62 @@ def build_decision_data(
         float(judge_config.get("min_kappa", DEFAULT_MIN_KAPPA)),
         int(judge_config.get("min_labels", DEFAULT_MIN_LABELS)),
     )
-    comparisons = _comparison_rows(report, judge_pairs, consensus)
-    arm_rankings = _arm_rankings(report, judge_pairs, consensus)
+    return {
+        "id": f"{judging.get('runner', 'judge')}:{judging.get('model', 'unknown')}",
+        "runner": judging.get("runner"),
+        "model": judging.get("model"),
+        "artifact_root": str(artifact_root),
+        "judging": judging,
+        "runtime": _judge_runtime_summary(prepared, judging, judging_root=artifact_root),
+        "n_way_rankings": _n_way_review(report, [], judging)["judge"],
+        "judged_pairs": sum(row.get("score") is not None for row in judge_pairs.values()),
+        "calibration": calibration,
+        "per_episode_agreement": per_task_agreement(task_rows),
+        "disagreements": disagreements,
+        "comparisons": _comparison_rows(report, judge_pairs, consensus),
+        "arm_rankings": _arm_rankings(report, judge_pairs, consensus),
+    }
+
+
+def build_decision_data(
+    root: str | Path,
+    label_paths: Sequence[str | Path],
+    *,
+    generated_at: str | None = None,
+    judging_paths: Sequence[str | Path] | None = None,
+) -> dict[str, Any]:
+    prepared = Path(verify_prepared(root)["root"])
+    report = build_experiment_report_data(prepared)
+    labels, sources = _load_human_labels(label_paths, report)
+    consensus = _consensus(labels)
+    resolved_judging_paths = (
+        [Path(path).resolve() for path in judging_paths]
+        if judging_paths is not None
+        else ([prepared / "judging"] if (prepared / "judging").is_dir() else [])
+    )
+    judge_lanes: list[dict[str, Any]] = []
+    for judging_root in resolved_judging_paths:
+        verify_judging(prepared, judging_root)
+        judging_doc = _read_json(judging_root / "pairs.json")
+        judge_lanes.append(
+            _analyze_judging(prepared, report, consensus, judging_doc, judging_root)
+        )
+    primary_lane = judge_lanes[0] if judge_lanes else None
+    judging = primary_lane["judging"] if primary_lane else None
+    judge_runtime = primary_lane["runtime"] if primary_lane else {"status": "not-run", "calls": []}
+    n_way_review = _n_way_review(report, label_paths, judging)
+    calibration = (
+        primary_lane["calibration"]
+        if primary_lane
+        else calibration_status(
+            cohens_kappa([]),
+            float(report["judge"].get("min_kappa", DEFAULT_MIN_KAPPA)),
+            int(report["judge"].get("min_labels", DEFAULT_MIN_LABELS)),
+        )
+    )
+    disagreements = primary_lane["disagreements"] if primary_lane else []
+    comparisons = primary_lane["comparisons"] if primary_lane else []
+    arm_rankings = primary_lane["arm_rankings"] if primary_lane else []
     labelled_pairs = len({row["pair_id"] for row in labels if row["category"] != "unclear"})
     revealed = sum(bool(row["identities_revealed"]) for row in labels)
     labels_per_pair = int(report["human"].get("labels_per_pair", 1))
@@ -1272,7 +1379,11 @@ def build_decision_data(
         if usable_counts.get(pair["pair_id"], 0) < labels_per_pair
     )
     human_complete = not under_labelled_pairs
-    headline_eligible = bool(calibration["headline_eligible"] and human_complete)
+    headline_eligible = bool(
+        judge_lanes
+        and all(lane["calibration"]["headline_eligible"] for lane in judge_lanes)
+        and human_complete
+    )
     human_scores = [
         row for row in arm_rankings if row["human"]["score"] is not None
     ]
@@ -1315,11 +1426,15 @@ def build_decision_data(
         "labels": labels,
         "consensus": consensus,
         "judging": judging,
+        "judges": judge_lanes,
+        "judge_count": len(judge_lanes),
         "judge_runtime": judge_runtime,
         "n_way_review": n_way_review,
-        "judged_pairs": sum(row.get("score") is not None for row in judge_pairs.values()),
+        "judged_pairs": primary_lane["judged_pairs"] if primary_lane else 0,
         "calibration": calibration,
-        "per_episode_agreement": per_task_agreement(task_rows),
+        "per_episode_agreement": (
+            primary_lane["per_episode_agreement"] if primary_lane else []
+        ),
         "disagreements": disagreements,
         "comparisons": comparisons,
         "arm_rankings": arm_rankings,
@@ -1347,25 +1462,7 @@ def _pct_ci(row: dict[str, Any], key: str) -> str:
 
 
 def render_decision_html(data: dict[str, Any]) -> str:
-    calibration = data["calibration"]
-    comparison_html = "".join(
-        f"<tr><td>{_esc(row['candidate'])}</td><td>{_esc(row['baseline'])}</td>"
-        f"<td>{_pct_ci(row, 'human')} <small>n={row['human']['n']}</small></td>"
-        f"<td>{_pct_ci(row, 'judge')} <small>n={row['judge']['n']}</small></td></tr>"
-        for row in data["comparisons"]
-    )
-    disagreement_html = "".join(
-        f"<li><code>{_esc(row['pair_id'])}</code> · {_esc(row['episode'])}: "
-        f"human {_esc(row['human'])}, judge {_esc(row['judge'])}</li>"
-        for row in data["disagreements"]
-    ) or "<li>None among calibrated labels.</li>"
-    status = "Eligible" if data["headline_eligible"] else "Not eligible"
-    reason = calibration.get("reason") or "Judge calibration passed the configured gate."
-    if data["under_labelled_pairs"]:
-        reason = (
-            f"{len(data['under_labelled_pairs'])} pair(s) have fewer than the required "
-            "human labels. " + reason
-        )
+    judge_lanes = data.get("judges", [])
     recommendation = data["recommendation"]
     n_way = data.get("ranking_style") == "n-way"
     evidence_label = "Induced pair evidence" if n_way else "Pairwise evidence"
@@ -1396,62 +1493,119 @@ def render_decision_html(data: dict[str, Any]) -> str:
         for row in n_way_review.get("human", [])
     )
     judge_rankings = "".join(
-        "<article><h3>Judge ranking</h3><ol>"
+        f"<article><h3>{_esc(lane.get('model'))} ranking</h3><ol>"
         + "".join(f"<li>{_esc(arm)}</li>" for arm in row.get("arms", []))
         + f"</ol><p><b>Rationale:</b> {_esc(row.get('reason'))}</p></article>"
-        for row in n_way_review.get("judge", [])
+        for lane in judge_lanes
+        for row in lane.get("n_way_rankings", [])
     )
     n_way_html = (
         '<section><div class="eyebrow">Full N-way judgment</div>'
-        f"<h2>Human and judge orderings</h2>{human_rankings}{judge_rankings}</section>"
+        f'<h2>Human and judge orderings</h2><div class="judge-grid">'
+        f"{human_rankings}{judge_rankings}</div></section>"
         if n_way and (human_rankings or judge_rankings)
         else ""
     )
-    runtime = data.get("judge_runtime", {})
-    runtime_calls = "".join(
-        "<article><ul>"
-        + "".join(
-            f"<li><code>{_esc(model)}</code> · "
-            f"{'primary response' if model == call.get('observed_model') else 'auxiliary usage'}"
-            + (
-                f" · ${float(usage.get('costUSD')):.4f} API list-price equivalent"
-                if isinstance(usage, dict) and isinstance(usage.get("costUSD"), (int, float))
-                else ""
+    runtime_cards = ""
+    for lane in judge_lanes:
+        runtime = lane.get("runtime", {})
+        runtime_calls = "".join(
+            "<ul>"
+            + "".join(
+                f"<li><code>{_esc(model)}</code> · "
+                f"{'primary response' if model == call.get('observed_model') else 'auxiliary usage'}"
+                + (
+                    f" · ${float(usage.get('costUSD')):.4f} API list-price equivalent"
+                    if isinstance(usage, dict)
+                    and isinstance(usage.get("costUSD"), (int, float))
+                    else ""
+                )
+                + "</li>"
+                for model, usage in call.get("model_usage", {}).items()
             )
-            + "</li>"
-            for model, usage in call.get("model_usage", {}).items()
+            + "</ul>"
+            for call in runtime.get("calls", [])
+            if call.get("model_usage")
         )
-        + "</ul></article>"
-        for call in runtime.get("calls", [])
-        if call.get("model_usage")
-    )
-    runtime_total = runtime.get("runner_meter_equivalent_usd")
+        runtime_total = runtime.get("runner_meter_equivalent_usd")
+        runtime_cards += (
+            "<article>"
+            f"<h3>{_esc(lane.get('model'))}</h3><p>Primary observed: "
+            f"<code>{_esc(', '.join(runtime.get('observed_models', [])) or 'unavailable')}</code>"
+            "</p>"
+            + (
+                f"<p>API list-price equivalent: <b>${float(runtime_total):.4f}</b>. "
+                "Not the subscription charge.</p>"
+                if isinstance(runtime_total, (int, float))
+                else "<p>API list-price equivalent unavailable.</p>"
+            )
+            + runtime_calls
+            + "</article>"
+        )
     runtime_html = (
-        '<section><div class="eyebrow">Judge execution identity</div><h2>'
-        f"Requested <code>{_esc(runtime.get('requested_model'))}</code>; primary observed "
-        f"<code>{_esc(', '.join(runtime.get('observed_models', [])) or 'unavailable')}</code>"
-        "</h2>"
-        + (
-            f"<p>Runner-reported API list-price equivalent: <b>${float(runtime_total):.4f}</b>. "
-            "This is not the subscription charge.</p>"
-            if isinstance(runtime_total, (int, float))
-            else ""
-        )
-        + runtime_calls
-        + "</section>"
-        if runtime.get("status") == "recorded"
+        '<section><div class="eyebrow">Judge execution identity</div>'
+        f'<h2>Requested and observed models</h2><div class="judge-grid">'
+        f"{runtime_cards}</div></section>"
+        if runtime_cards
         else ""
     )
+    calibration_cards = "".join(
+        f"<article class=\"{'ok' if lane['calibration']['headline_eligible'] else 'warn'}\">"
+        f"<h3>{_esc(lane.get('model'))}: "
+        f"{'eligible' if lane['calibration']['headline_eligible'] else 'diagnostic only'}</h3>"
+        f"<p>{_esc(lane['calibration'].get('reason') or 'Calibration passed.')}</p>"
+        f"<p>Kappa: <b>{_esc(lane['calibration'].get('kappa'))}</b>; agreement "
+        f"{_pct(lane['calibration'].get('agreement'))}; "
+        f"n={lane['calibration'].get('n_labels')}.</p></article>"
+        for lane in judge_lanes
+    )
+    calibration_html = (
+        '<section><div class="eyebrow">Calibration gates</div>'
+        f'<h2>Each judge versus the same human ranking</h2><div class="judge-grid">'
+        f"{calibration_cards}</div></section>"
+    )
+    evidence_cards = ""
+    audit_cards = ""
+    for lane in judge_lanes:
+        rows = "".join(
+            f"<tr><td>{_esc(row['candidate'])}</td><td>{_esc(row['baseline'])}</td>"
+            f"<td>{_pct_ci(row, 'human')} <small>n={row['human']['n']}</small></td>"
+            f"<td>{_pct_ci(row, 'judge')} <small>n={row['judge']['n']}</small></td></tr>"
+            for row in lane["comparisons"]
+        )
+        evidence_cards += (
+            f"<article><h3>{_esc(lane.get('model'))}</h3><table><thead><tr>"
+            f"<th>Candidate</th><th>Compared with</th><th>Human</th>"
+            f"<th>{_esc(lane.get('model'))}</th></tr></thead><tbody>{rows}</tbody></table></article>"
+        )
+        disagreement_rows = "".join(
+            f"<li><code>{_esc(row['pair_id'])}</code> · {_esc(row['episode'])}: "
+            f"human {_esc(row['human'])}, judge {_esc(row['judge'])}</li>"
+            for row in lane["disagreements"]
+        ) or "<li>None.</li>"
+        audit_cards += (
+            f"<article><h3>{_esc(lane.get('model'))}</h3><ul>{disagreement_rows}</ul></article>"
+        )
+    evidence_html = (
+        f'<section><div class="eyebrow">{evidence_label}</div>'
+        f'<h2>Candidate preference by judge</h2><div class="judge-grid">{evidence_cards}</div>'
+        f"<p><small>{evidence_note} Confidence intervals are retained in data.json and "
+        "suppressed below eight pairs.</small></p></section>"
+    )
+    audit_html = (
+        '<section><div class="eyebrow">Audit queue</div>'
+        f'<h2>Human ↔ judge disagreements</h2><div class="judge-grid">{audit_cards}</div></section>'
+    )
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{_esc(data['experiment'])} · decision</title><style>
-:root{{--ink:#17231d;--muted:#607068;--paper:#f5f1e8;--card:#fffdf7;--green:#145f42;--amber:#b86d13;--line:#d8d2c3}}*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,sans-serif}}header,main,footer{{max-width:1120px;margin:auto;padding:28px}}header{{padding-top:64px}}.eyebrow{{color:var(--green);font-weight:800;text-transform:uppercase;letter-spacing:.12em;font-size:12px}}h1{{font:700 clamp(32px,5vw,62px)/1.04 Georgia,serif;margin:.2em 0}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}.card,section{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:16px 0}}.card b{{display:block;font-size:30px}}.warn{{border-left:6px solid var(--amber)}}.ok{{border-left:6px solid var(--green)}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px;text-align:left;border-bottom:1px solid var(--line)}}small{{color:var(--muted)}}code{{font-size:.86em}}@media(max-width:700px){{.grid{{grid-template-columns:1fr 1fr}}table{{font-size:13px}}header,main,footer{{padding:18px}}}}
+:root{{--ink:#17231d;--muted:#607068;--paper:#f5f1e8;--card:#fffdf7;--green:#145f42;--amber:#b86d13;--line:#d8d2c3}}*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,sans-serif}}header,main,footer{{max-width:1320px;margin:auto;padding:28px}}header{{padding-top:64px}}.eyebrow{{color:var(--green);font-weight:800;text-transform:uppercase;letter-spacing:.12em;font-size:12px}}h1{{font:700 clamp(32px,5vw,62px)/1.04 Georgia,serif;margin:.2em 0}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}.judge-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}}.judge-grid article{{border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto}}.card,section{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:16px 0}}.card b{{display:block;font-size:30px}}.warn{{border-left:6px solid var(--amber)}}.ok{{border-left:6px solid var(--green)}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px;text-align:left;border-bottom:1px solid var(--line)}}small{{color:var(--muted)}}code{{font-size:.86em}}@media(max-width:700px){{.grid{{grid-template-columns:1fr 1fr}}.judge-grid{{grid-template-columns:1fr}}table{{font-size:13px}}header,main,footer{{padding:18px}}}}
 </style></head><body><header><div class="eyebrow">evalmine · decision evidence</div><h1>{_esc(data['question'])}</h1><p>{_esc(data['experiment'])} · plan <code>{_esc(data['plan_id'])}</code></p></header><main>
-<div class="grid"><div class="card"><small>{pair_label}</small><b>{data['pair_count']}</b></div><div class="card"><small>Human-labelled</small><b>{data['labelled_pairs']}</b></div><div class="card"><small>LLM-judged</small><b>{data['judged_pairs']}</b></div><div class="card"><small>Disagreements</small><b>{len(data['disagreements'])}</b></div></div>
+<div class="grid"><div class="card"><small>{pair_label}</small><b>{data['pair_count']}</b></div><div class="card"><small>Human-labelled</small><b>{data['labelled_pairs']}</b></div><div class="card"><small>Judges</small><b>{data.get('judge_count', 0)}</b></div><div class="card"><small>Judged per lane</small><b>{data['judged_pairs']}</b></div></div>
 <section class="{'ok' if recommendation.get('arm') else 'warn'}"><div class="eyebrow">Decision</div><h2>{_esc(recommendation_text)}</h2><p>{_esc(recommendation['basis'])}</p></section>
-<section class="{'ok' if data['headline_eligible'] else 'warn'}"><div class="eyebrow">Calibration gate</div><h2>{status}</h2><p>{_esc(reason)}</p><p>Kappa: <b>{_esc(calibration.get('kappa'))}</b> ({_esc(calibration.get('kappa_band'))}); agreement {_pct(calibration.get('agreement'))}; n={calibration.get('n_labels')}.</p></section>
+{calibration_html}
 {n_way_html}
 {runtime_html}
-<section><div class="eyebrow">{evidence_label}</div><h2>Candidate preference by arm</h2><table><thead><tr><th>Candidate</th><th>Compared with</th><th>Human</th><th>Judge</th></tr></thead><tbody>{comparison_html}</tbody></table><p><small>{evidence_note} Confidence intervals are retained in data.json and suppressed below eight pairs.</small></p></section>
-<section><div class="eyebrow">Audit queue</div><h2>Human ↔ judge disagreements</h2><ul>{disagreement_html}</ul></section>
+{evidence_html}
+{audit_html}
 <section><div class="eyebrow">Interpretation</div><h2>What this report can claim</h2><p>{'The judge passed calibration and its aggregate results may be used as headline evidence.' if data['headline_eligible'] else 'Use the human rows and inspect disagreements. Judge aggregates are shown diagnostically, but the calibration gate prevents treating them as a headline conclusion.'}</p><p>{data['identities_revealed_labels']} imported labels were recorded after identity reveal.</p></section></main><footer>Generated {_esc(data['generated_at'])} · self-contained · raw evidence remains beside this report</footer></body></html>"""
 
 
@@ -1460,12 +1614,20 @@ def generate_decision_report(
     label_paths: Sequence[str | Path],
     *,
     generated_at: str | None = None,
+    judging_paths: Sequence[str | Path] | None = None,
+    output: str | Path | None = None,
 ) -> DecisionResult:
     prepared = Path(verify_prepared(root)["root"])
-    decision_root = prepared / "decision"
+    decision_root = Path(output).resolve() if output is not None else prepared / "decision"
     if decision_root.exists() or decision_root.is_symlink():
         raise DecisionError(f"decision evidence already exists at {decision_root}")
-    data = build_decision_data(prepared, label_paths, generated_at=generated_at)
+    data = build_decision_data(
+        prepared,
+        label_paths,
+        generated_at=generated_at,
+        judging_paths=judging_paths,
+    )
+    decision_root.parent.mkdir(parents=True, exist_ok=True)
     decision_root.mkdir()
     labels_root = decision_root / "labels"
     labels_root.mkdir()
@@ -1494,9 +1656,13 @@ def generate_decision_report(
     )
 
 
-def verify_decision(root: str | Path) -> dict[str, Any]:
+def verify_decision(
+    root: str | Path, decision_path: str | Path | None = None
+) -> dict[str, Any]:
     prepared = Path(verify_prepared(root)["root"])
-    decision_root = prepared / "decision"
+    decision_root = (
+        Path(decision_path).resolve() if decision_path is not None else prepared / "decision"
+    )
     marker = _read_json(decision_root / "decision.json")
     if marker.get("format") != DECISION_FORMAT or marker.get("prepared_root") != str(prepared):
         raise DecisionError("decision marker does not match this prepared experiment")

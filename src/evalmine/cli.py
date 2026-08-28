@@ -355,6 +355,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="explicit judging protocol override; recorded in immutable judge evidence",
     )
+    experiment_judge.add_argument(
+        "--runner",
+        choices=("claude-code", "codex-cli", "gemini-cli", "api-prompt"),
+        default=None,
+        help="explicit judge runner override; recorded in immutable judge evidence",
+    )
+    experiment_judge.add_argument(
+        "--model",
+        default=None,
+        help="explicit judge model override; recorded in immutable judge evidence",
+    )
+    experiment_judge.add_argument(
+        "--out",
+        default=None,
+        help="write a create-once named judge track here instead of PREPARED/judging",
+    )
     experiment_judge.add_argument("--allow-provider-calls", action="store_true")
     experiment_judge.add_argument(
         "--max-cost", type=float, default=None, help="USD; required for API judging"
@@ -374,6 +390,17 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_decide.add_argument("prepared")
     experiment_decide.add_argument(
         "--labels", action="append", required=True, help="exported label JSON (repeatable)"
+    )
+    experiment_decide.add_argument(
+        "--judging",
+        action="append",
+        default=None,
+        help="immutable judge evidence root (repeat for side-by-side judges)",
+    )
+    experiment_decide.add_argument(
+        "--out",
+        default=None,
+        help="write a create-once decision revision here instead of PREPARED/decision",
     )
     experiment_decide.add_argument("--json", action="store_true")
     experiment_discard = experiment_subparsers.add_parser(
@@ -767,6 +794,9 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             prices_path=args.prices,
             executable_overrides=overrides,
             ranking_style=args.ranking_style,
+            runner_override=args.runner,
+            model_override=args.model,
+            output=args.out,
             progress=None if args.json else _print_experiment_progress,
         )
         if args.json:
@@ -779,7 +809,12 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     if args.experiment_verb == "decide":
-        result = generate_decision_report(args.prepared, args.labels)
+        result = generate_decision_report(
+            args.prepared,
+            args.labels,
+            judging_paths=args.judging,
+            output=args.out,
+        )
         if args.json:
             print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
         else:
