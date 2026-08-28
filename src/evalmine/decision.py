@@ -111,6 +111,9 @@ class EpisodeJudgeCall:
     cost_usd: float | None = None
     raw: str = ""
     observed_model: str | None = None
+    meter_equivalent_usd: float | None = None
+    model_usage: dict[str, Any] | None = None
+    auxiliary_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -293,6 +296,9 @@ def _parse_ranking_call(call: EpisodeJudgeCall, ranking: dict[str, Any]) -> dict
         "output_tokens": call.output_tokens,
         "cost_usd": call.cost_usd,
         "observed_model": call.observed_model,
+        "meter_equivalent_usd": call.meter_equivalent_usd,
+        "model_usage": call.model_usage,
+        "auxiliary_models": list(call.auxiliary_models),
     }
 
 
@@ -318,6 +324,9 @@ def _parse_judge_call(call: EpisodeJudgeCall, order: int) -> dict[str, Any]:
             "output_tokens": call.output_tokens,
             "cost_usd": call.cost_usd,
             "observed_model": call.observed_model,
+            "meter_equivalent_usd": call.meter_equivalent_usd,
+            "model_usage": call.model_usage,
+            "auxiliary_models": list(call.auxiliary_models),
         }
     winner = parsed["winner"]
     if winner == "tie":
@@ -337,6 +346,9 @@ def _parse_judge_call(call: EpisodeJudgeCall, order: int) -> dict[str, Any]:
         "output_tokens": call.output_tokens,
         "cost_usd": call.cost_usd,
         "observed_model": call.observed_model,
+        "meter_equivalent_usd": call.meter_equivalent_usd,
+        "model_usage": call.model_usage,
+        "auxiliary_models": list(call.auxiliary_models),
     }
 
 
@@ -386,6 +398,7 @@ class _ApiJudge:
             output_tokens=response.output_tokens,
             cost_usd=cost,
             observed_model=self.model_id,
+            meter_equivalent_usd=cost,
         )
 
 
@@ -505,6 +518,13 @@ class _SubscriptionJudge:
             output_tokens=usage.get("output_tokens") or usage.get("completion_tokens"),
             cost_usd=None,
             observed_model=observed,
+            meter_equivalent_usd=(
+                float(usage["reported_cost_usd"])
+                if isinstance(usage.get("reported_cost_usd"), (int, float))
+                else None
+            ),
+            model_usage=normalized.get("model_usage") or None,
+            auxiliary_models=tuple(normalized.get("auxiliary_models") or ()),
         )
 
 
@@ -1076,6 +1096,131 @@ def _arm_rankings(
     )
 
 
+def _judging_call_rows(judging: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = [row for row in judging.get("rankings", []) if isinstance(row, dict)]
+    for pair in judging.get("pairs", []):
+        if isinstance(pair, dict):
+            rows.extend(row for row in pair.get("passes", []) if isinstance(row, dict))
+    return rows
+
+
+def _judge_runtime_summary(prepared: Path, judging: dict[str, Any] | None) -> dict[str, Any]:
+    if judging is None:
+        return {"status": "not-run", "calls": []}
+    calls: list[dict[str, Any]] = []
+    for row in _judging_call_rows(judging):
+        observed = row.get("observed_model")
+        model_usage = row.get("model_usage") if isinstance(row.get("model_usage"), dict) else {}
+        auxiliary = list(row.get("auxiliary_models") or [])
+        meter_equivalent = row.get("meter_equivalent_usd")
+        raw_relative = row.get("raw")
+        if isinstance(raw_relative, str):
+            raw_path = prepared / "judging" / raw_relative
+            try:
+                raw_text = raw_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                raw_text = ""
+            events, malformed = _parse_events(raw_text)
+            if events and not malformed:
+                _session, runtime_model, _final, _tools, normalized = _normalize_events(
+                    str(judging.get("runner", "")), events
+                )
+                observed = runtime_model or observed
+                model_usage = normalized.get("model_usage") or model_usage
+                auxiliary = list(normalized.get("auxiliary_models") or auxiliary)
+                usage = normalized.get("usage", {})
+                if isinstance(usage.get("reported_cost_usd"), (int, float)):
+                    meter_equivalent = float(usage["reported_cost_usd"])
+        calls.append(
+            {
+                "observed_model": observed,
+                "auxiliary_models": auxiliary,
+                "model_usage": model_usage,
+                "meter_equivalent_usd": meter_equivalent,
+                "latency_ms": row.get("latency_ms"),
+                "raw": raw_relative,
+            }
+        )
+    observed_models = list(
+        dict.fromkeys(
+            str(call["observed_model"])
+            for call in calls
+            if isinstance(call.get("observed_model"), str)
+        )
+    )
+    auxiliary_models = list(
+        dict.fromkeys(
+            str(model)
+            for call in calls
+            for model in call.get("auxiliary_models", [])
+            if isinstance(model, str)
+        )
+    )
+    meter_values = [
+        float(call["meter_equivalent_usd"])
+        for call in calls
+        if isinstance(call.get("meter_equivalent_usd"), (int, float))
+    ]
+    requested = judging.get("model")
+    return {
+        "status": "recorded" if calls else "unavailable",
+        "runner": judging.get("runner"),
+        "requested_model": requested,
+        "observed_models": observed_models,
+        "primary_matches_requested": bool(observed_models)
+        and all(model == requested for model in observed_models),
+        "auxiliary_models": auxiliary_models,
+        "runner_meter_equivalent_usd": sum(meter_values) if len(meter_values) == len(calls) else None,
+        "billing_basis": judging.get("billing_basis"),
+        "calls": calls,
+    }
+
+
+def _n_way_review(
+    report: dict[str, Any],
+    label_paths: Sequence[str | Path],
+    judging: dict[str, Any] | None,
+) -> dict[str, Any]:
+    run_to_arm = {
+        run["run_key"]: f"{run['arm']} · {run['requested_model']}"
+        for run in report["runs"]
+    }
+    human: list[dict[str, Any]] = []
+    for label_path in label_paths:
+        payload = _read_json(Path(label_path).resolve())
+        if payload.get("format") != RANKING_LABEL_FORMAT:
+            continue
+        for row in payload.get("rankings", []):
+            if not isinstance(row, dict) or row.get("unclear"):
+                continue
+            run_keys = row.get("ranked_run_keys") or []
+            human.append(
+                {
+                    "ranking_id": row.get("ranking_id"),
+                    "arms": [run_to_arm.get(str(run_key), str(run_key)) for run_key in run_keys],
+                    "note": row.get("note"),
+                    "identities_revealed": bool(row.get("identities_revealed")),
+                    "identity_reveal_attestation": row.get("identity_reveal_attestation"),
+                }
+            )
+    judge: list[dict[str, Any]] = []
+    if judging is not None:
+        for row in judging.get("rankings", []):
+            if not isinstance(row, dict) or row.get("status") != "parsed":
+                continue
+            judge.append(
+                {
+                    "ranking_id": row.get("ranking_id"),
+                    "arms": [
+                        run_to_arm.get(str(run_key), str(run_key))
+                        for run_key in row.get("ranked_run_keys", [])
+                    ],
+                    "reason": row.get("reason"),
+                }
+            )
+    return {"human": human, "judge": judge}
+
+
 def build_decision_data(
     root: str | Path, label_paths: Sequence[str | Path], *, generated_at: str | None = None
 ) -> dict[str, Any]:
@@ -1089,6 +1234,8 @@ def build_decision_data(
         verify_judging(prepared)
         judging = _read_json(prepared / "judging" / "pairs.json")
         judge_pairs = {row["pair_id"]: row for row in judging["pairs"]}
+    judge_runtime = _judge_runtime_summary(prepared, judging)
+    n_way_review = _n_way_review(report, label_paths, judging)
     calibration_rows = []
     task_rows = []
     disagreements = []
@@ -1168,6 +1315,8 @@ def build_decision_data(
         "labels": labels,
         "consensus": consensus,
         "judging": judging,
+        "judge_runtime": judge_runtime,
+        "n_way_review": n_way_review,
         "judged_pairs": sum(row.get("score") is not None for row in judge_pairs.values()),
         "calibration": calibration,
         "per_episode_agreement": per_task_agreement(task_rows),
@@ -1231,12 +1380,76 @@ def render_decision_html(data: dict[str, Any]) -> str:
         if recommendation.get("arm")
         else f"No single arm recommendation: {recommendation['status']}."
     )
+    n_way_review = data.get("n_way_review", {})
+    human_rankings = "".join(
+        "<article><h3>Human ranking</h3><ol>"
+        + "".join(f"<li>{_esc(arm)}</li>" for arm in row.get("arms", []))
+        + f"</ol><p>{_esc(row.get('note'))}</p>"
+        + (
+            "<p><small>Recorded blind: identities were revealed after labeling "
+            "per operator attestation.</small></p>"
+            if (row.get("identity_reveal_attestation") or {}).get("timing")
+            == "after-labeling"
+            else ""
+        )
+        + "</article>"
+        for row in n_way_review.get("human", [])
+    )
+    judge_rankings = "".join(
+        "<article><h3>Judge ranking</h3><ol>"
+        + "".join(f"<li>{_esc(arm)}</li>" for arm in row.get("arms", []))
+        + f"</ol><p><b>Rationale:</b> {_esc(row.get('reason'))}</p></article>"
+        for row in n_way_review.get("judge", [])
+    )
+    n_way_html = (
+        '<section><div class="eyebrow">Full N-way judgment</div>'
+        f"<h2>Human and judge orderings</h2>{human_rankings}{judge_rankings}</section>"
+        if n_way and (human_rankings or judge_rankings)
+        else ""
+    )
+    runtime = data.get("judge_runtime", {})
+    runtime_calls = "".join(
+        "<article><ul>"
+        + "".join(
+            f"<li><code>{_esc(model)}</code> · "
+            f"{'primary response' if model == call.get('observed_model') else 'auxiliary usage'}"
+            + (
+                f" · ${float(usage.get('costUSD')):.4f} API list-price equivalent"
+                if isinstance(usage, dict) and isinstance(usage.get("costUSD"), (int, float))
+                else ""
+            )
+            + "</li>"
+            for model, usage in call.get("model_usage", {}).items()
+        )
+        + "</ul></article>"
+        for call in runtime.get("calls", [])
+        if call.get("model_usage")
+    )
+    runtime_total = runtime.get("runner_meter_equivalent_usd")
+    runtime_html = (
+        '<section><div class="eyebrow">Judge execution identity</div><h2>'
+        f"Requested <code>{_esc(runtime.get('requested_model'))}</code>; primary observed "
+        f"<code>{_esc(', '.join(runtime.get('observed_models', [])) or 'unavailable')}</code>"
+        "</h2>"
+        + (
+            f"<p>Runner-reported API list-price equivalent: <b>${float(runtime_total):.4f}</b>. "
+            "This is not the subscription charge.</p>"
+            if isinstance(runtime_total, (int, float))
+            else ""
+        )
+        + runtime_calls
+        + "</section>"
+        if runtime.get("status") == "recorded"
+        else ""
+    )
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{_esc(data['experiment'])} · decision</title><style>
 :root{{--ink:#17231d;--muted:#607068;--paper:#f5f1e8;--card:#fffdf7;--green:#145f42;--amber:#b86d13;--line:#d8d2c3}}*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,sans-serif}}header,main,footer{{max-width:1120px;margin:auto;padding:28px}}header{{padding-top:64px}}.eyebrow{{color:var(--green);font-weight:800;text-transform:uppercase;letter-spacing:.12em;font-size:12px}}h1{{font:700 clamp(32px,5vw,62px)/1.04 Georgia,serif;margin:.2em 0}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}.card,section{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:16px 0}}.card b{{display:block;font-size:30px}}.warn{{border-left:6px solid var(--amber)}}.ok{{border-left:6px solid var(--green)}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px;text-align:left;border-bottom:1px solid var(--line)}}small{{color:var(--muted)}}code{{font-size:.86em}}@media(max-width:700px){{.grid{{grid-template-columns:1fr 1fr}}table{{font-size:13px}}header,main,footer{{padding:18px}}}}
 </style></head><body><header><div class="eyebrow">evalmine · decision evidence</div><h1>{_esc(data['question'])}</h1><p>{_esc(data['experiment'])} · plan <code>{_esc(data['plan_id'])}</code></p></header><main>
 <div class="grid"><div class="card"><small>{pair_label}</small><b>{data['pair_count']}</b></div><div class="card"><small>Human-labelled</small><b>{data['labelled_pairs']}</b></div><div class="card"><small>LLM-judged</small><b>{data['judged_pairs']}</b></div><div class="card"><small>Disagreements</small><b>{len(data['disagreements'])}</b></div></div>
 <section class="{'ok' if recommendation.get('arm') else 'warn'}"><div class="eyebrow">Decision</div><h2>{_esc(recommendation_text)}</h2><p>{_esc(recommendation['basis'])}</p></section>
 <section class="{'ok' if data['headline_eligible'] else 'warn'}"><div class="eyebrow">Calibration gate</div><h2>{status}</h2><p>{_esc(reason)}</p><p>Kappa: <b>{_esc(calibration.get('kappa'))}</b> ({_esc(calibration.get('kappa_band'))}); agreement {_pct(calibration.get('agreement'))}; n={calibration.get('n_labels')}.</p></section>
+{n_way_html}
+{runtime_html}
 <section><div class="eyebrow">{evidence_label}</div><h2>Candidate preference by arm</h2><table><thead><tr><th>Candidate</th><th>Compared with</th><th>Human</th><th>Judge</th></tr></thead><tbody>{comparison_html}</tbody></table><p><small>{evidence_note} Confidence intervals are retained in data.json and suppressed below eight pairs.</small></p></section>
 <section><div class="eyebrow">Audit queue</div><h2>Human ↔ judge disagreements</h2><ul>{disagreement_html}</ul></section>
 <section><div class="eyebrow">Interpretation</div><h2>What this report can claim</h2><p>{'The judge passed calibration and its aggregate results may be used as headline evidence.' if data['headline_eligible'] else 'Use the human rows and inspect disagreements. Judge aggregates are shown diagnostically, but the calibration gate prevents treating them as a headline conclusion.'}</p><p>{data['identities_revealed_labels']} imported labels were recorded after identity reveal.</p></section></main><footer>Generated {_esc(data['generated_at'])} · self-contained · raw evidence remains beside this report</footer></body></html>"""

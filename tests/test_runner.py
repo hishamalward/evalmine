@@ -43,6 +43,7 @@ from evalmine.runner import (
     ProcessResult,
     RunnerError,
     _codex_rollout_identity,
+    _normalize_events,
     execute_experiment,
     preflight_experiment,
     verify_execution,
@@ -723,6 +724,32 @@ def test_cli_progress_is_immediate_and_human_readable(capsys):
     ]
 
 
+def test_claude_primary_model_comes_from_the_assistant_not_auxiliary_usage():
+    events = [
+        {"type": "system", "subtype": "init", "model": "claude-fable-5"},
+        {
+            "type": "assistant",
+            "message": {"model": "claude-fable-5", "content": []},
+        },
+        {
+            "type": "result",
+            "result": '{"ranking":["A","B"]}',
+            "usage": {"input_tokens": 2, "output_tokens": 100},
+            "total_cost_usd": 1.25,
+            "modelUsage": {
+                "claude-haiku-4-5": {"costUSD": 0.02},
+                "claude-fable-5": {"costUSD": 1.23},
+            },
+        },
+    ]
+    _session, observed, _final, _tools, normalized = _normalize_events(
+        "claude-code", events
+    )
+    assert observed == "claude-fable-5"
+    assert normalized["auxiliary_models"] == ["claude-haiku-4-5"]
+    assert normalized["usage"]["reported_cost_usd"] == 1.25
+
+
 def test_execution_verification_detects_tampering(runner_experiment, fake_executables):
     prepared, _, _ = runner_experiment
     result = execute_experiment(
@@ -1271,7 +1298,12 @@ def test_n_way_report_judge_and_human_ranking_use_one_call(
         decision = generate_decision_report(prepared.root, [label_path])
         assert decision.labelled_pairs == 3
         assert decision.judged_pairs == 3
-        assert "Induced pair evidence" in decision.html.read_text()
+        decision_html = decision.html.read_text()
+        assert "Induced pair evidence" in decision_html
+        assert "Full N-way judgment" in decision_html
+        assert "Human and judge orderings" in decision_html
+        assert "Judge execution identity" in decision_html
+        assert "safe N-way judge evidence" not in decision_html
     finally:
         if prepared.root.exists():
             discard_prepared(prepared.root)

@@ -958,9 +958,16 @@ def _normalize_events(
     final: str | None = None
     tools: list[dict[str, Any]] = []
     usage: dict[str, Any] = {}
+    model_usage: dict[str, Any] = {}
+    assistant_models: list[str] = []
     if runner == "claude-code":
         session_id = _first_string(events, "session_id")
         for event in events:
+            message = event.get("message")
+            if event.get("type") == "assistant" and isinstance(message, dict):
+                message_model = message.get("model")
+                if isinstance(message_model, str) and message_model:
+                    assistant_models.append(message_model)
             if event.get("type") == "result" and isinstance(event.get("result"), str):
                 final = event["result"]
                 if isinstance(event.get("usage"), dict):
@@ -979,11 +986,17 @@ def _normalize_events(
                                         "id": item.get("id"),
                                     }
                                 )
-        model_usage = next(
+        reported_model_usage = next(
             (value for value in _recursive_values(events, "modelUsage") if isinstance(value, dict)),
             None,
         )
-        if model_usage:
+        if reported_model_usage:
+            model_usage = reported_model_usage
+        if assistant_models:
+            # Claude Code's modelUsage may contain auxiliary infrastructure models.
+            # The assistant message identifies the model that authored the response.
+            observed_model = assistant_models[-1]
+        elif model_usage:
             observed_model = next(iter(model_usage), None)
     elif runner == "codex-cli":
         session_id = _first_string(events, "thread_id")
@@ -1039,7 +1052,14 @@ def _normalize_events(
         {"sequence": index, "provider_event": event_type}
         for index, event_type in enumerate(event_types, start=1)
     ]
-    return session_id, observed_model, final, tools, {"events": normalized, "usage": usage}
+    auxiliary_models = [model for model in model_usage if model != observed_model]
+    return session_id, observed_model, final, tools, {
+        "events": normalized,
+        "usage": usage,
+        "model_usage": model_usage,
+        "assistant_models": list(dict.fromkeys(assistant_models)),
+        "auxiliary_models": auxiliary_models,
+    }
 
 
 def _safe_command(args: list[str]) -> list[str]:
