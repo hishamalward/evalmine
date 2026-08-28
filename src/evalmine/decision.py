@@ -468,6 +468,7 @@ class _SubscriptionJudge:
                 "read-only",
                 "--cd",
                 str(self.cwd),
+                "--skip-git-repo-check",
                 "--json",
                 "--model",
                 self.model,

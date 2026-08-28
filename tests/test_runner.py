@@ -21,6 +21,7 @@ from evalmine.cli import EXIT_REFUSED_PREFLIGHT, _print_experiment_progress, mai
 from evalmine.decision import (
     DecisionError,
     EpisodeJudgeCall,
+    _SubscriptionJudge,
     generate_decision_report,
     judge_experiment,
     verify_decision,
@@ -339,6 +340,19 @@ def _execution_calls(driver: FakeDriver) -> list[dict[str, Any]]:
         for call in driver.calls
         if "--help" not in call["args"] and call["args"][-1] != "--version"
     ]
+
+
+def test_codex_subscription_judge_skips_git_repo_check(fake_executables, tmp_path):
+    judge = _SubscriptionJudge(
+        "codex-cli",
+        "gpt-5.6-sol",
+        tmp_path / "prepared-experiment",
+        tmp_path / "judge-schema.json",
+        driver=FakeDriver(),
+        executable_overrides=fake_executables,
+    )
+
+    assert "--skip-git-repo-check" in judge._command()
 
 
 def test_preflight_is_read_only_and_probes_all_runners(
