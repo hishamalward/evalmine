@@ -1340,7 +1340,6 @@ def test_n_way_report_judge_and_human_ranking_use_one_call(
                 output_tokens=4,
                 cost_usd=0.002,
                 raw="safe second N-way judge evidence",
-                observed_model="sol-test",
             )
 
         second = judge_experiment(
@@ -1402,6 +1401,13 @@ def test_n_way_report_judge_and_human_ranking_use_one_call(
             "codex-judge-test",
             "sol-test",
         ]
+        sol_runtime = decision_data["judges"][1]["runtime"]
+        assert sol_runtime["requested_model"] == "sol-test"
+        assert sol_runtime["observed_models"] == []
+        assert sol_runtime["primary_matches_requested"] is None
+        assert sol_runtime["identity_confidence"] == "requested-only"
+        assert "Requested: <code>sol-test</code>" in decision_html
+        assert "Identity confidence: <code>requested-only</code>" in decision_html
         assert "safe N-way judge evidence" not in decision_html
     finally:
         if prepared.root.exists():

@@ -1266,13 +1266,16 @@ def _judge_runtime_summary(
         if isinstance(call.get("meter_equivalent_usd"), (int, float))
     ]
     requested = judging.get("model")
+    primary_matches_requested = (
+        all(model == requested for model in observed_models) if observed_models else None
+    )
     return {
         "status": "recorded" if calls else "unavailable",
         "runner": judging.get("runner"),
         "requested_model": requested,
         "observed_models": observed_models,
-        "primary_matches_requested": bool(observed_models)
-        and all(model == requested for model in observed_models),
+        "primary_matches_requested": primary_matches_requested,
+        "identity_confidence": "runner-reported" if observed_models else "requested-only",
         "auxiliary_models": auxiliary_models,
         "runner_meter_equivalent_usd": sum(meter_values) if len(meter_values) == len(calls) else None,
         "billing_basis": judging.get("billing_basis"),
@@ -1574,9 +1577,11 @@ def render_decision_html(data: dict[str, Any]) -> str:
         runtime_total = runtime.get("runner_meter_equivalent_usd")
         runtime_cards += (
             "<article>"
-            f"<h3>{_esc(lane.get('model'))}</h3><p>Primary observed: "
+            f"<h3>{_esc(lane.get('model'))}</h3><p>Requested: "
+            f"<code>{_esc(runtime.get('requested_model') or 'unavailable')}</code></p>"
+            "<p>Primary observed: "
             f"<code>{_esc(', '.join(runtime.get('observed_models', [])) or 'unavailable')}</code>"
-            "</p>"
+            f"</p><p>Identity confidence: <code>{_esc(runtime.get('identity_confidence'))}</code></p>"
             + (
                 f"<p>API list-price equivalent: <b>${float(runtime_total):.4f}</b>. "
                 "Not the subscription charge.</p>"
