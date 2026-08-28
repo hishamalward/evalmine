@@ -77,7 +77,6 @@ NWAY_JUDGE_SCHEMA: dict[str, Any] = {
             "type": "array",
             "minItems": 2,
             "items": {"type": "string"},
-            "uniqueItems": True,
         },
         "reason": {"type": "string"},
     },
@@ -435,6 +434,27 @@ class _SubscriptionJudge:
         self.executable = executable
         self.schema = schema
         self.system = system
+        self.call_count = 0
+
+    @staticmethod
+    def _failure_detail(stdout: str, stderr: str) -> tuple[str, list[str], list[str]]:
+        events, malformed = _parse_events(stdout)
+        messages: list[str] = []
+        for event in events:
+            if event.get("type") not in {"error", "turn.failed"}:
+                continue
+            error = event.get("error")
+            if isinstance(error, dict):
+                error = error.get("message") or error.get("detail")
+            message = event.get("message") or error
+            if isinstance(message, str) and message.strip():
+                messages.append(message.strip())
+        if stderr.strip():
+            messages.append(stderr.strip())
+        if not messages and malformed:
+            messages.append(malformed[-1])
+        detail = " | ".join(messages) if messages else "no diagnostic text captured"
+        return detail[:1000], [str(event.get("type", "unknown")) for event in events], malformed
 
     def _command(self) -> list[str]:
         if self.runner == "claude-code":
@@ -497,6 +517,7 @@ class _SubscriptionJudge:
         raise JudgeRefused(f"runner {self.runner!r} cannot judge episodes")
 
     def __call__(self, prompt: str) -> EpisodeJudgeCall:
+        self.call_count += 1
         started = time.monotonic()
         result = self.driver.run(
             self._command(),
@@ -506,10 +527,32 @@ class _SubscriptionJudge:
             env=_child_env({}),
         )
         stdout = _redact_secrets(result.stdout)
+        stderr = _redact_secrets(result.stderr)
         if result.returncode != 0 or result.timed_out:
+            detail, event_types, malformed = self._failure_detail(stdout, stderr)
+            stem = self.schema_path.parent / "calls" / f"{self.call_count:04d}"
+            _write_read_only(stem.with_suffix(".raw.txt"), stdout.encode())
+            _write_read_only(stem.with_suffix(".stderr.txt"), stderr.encode())
+            _write_read_only(
+                stem.with_suffix(".failure.json"),
+                _json_bytes(
+                    {
+                        "format": "evalmine-judge-call-failure-v1",
+                        "created_at": _now(),
+                        "runner": self.runner,
+                        "requested_model": self.model,
+                        "exit_code": result.returncode,
+                        "timed_out": result.timed_out,
+                        "duration_ms": result.duration_ms,
+                        "detail": detail,
+                        "event_types": event_types,
+                        "malformed_event_lines": malformed,
+                    }
+                ),
+            )
             raise RunnerError(
                 f"episode judge {self.runner} exited {result.returncode}: "
-                f"{_redact_secrets(result.stderr)[:500]}"
+                f"{detail}"
             )
         events, malformed = _parse_events(stdout)
         if malformed:

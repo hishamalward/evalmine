@@ -19,6 +19,7 @@ import yaml
 
 from evalmine.cli import EXIT_REFUSED_PREFLIGHT, _print_experiment_progress, main
 from evalmine.decision import (
+    NWAY_JUDGE_SCHEMA,
     DecisionError,
     EpisodeJudgeCall,
     _SubscriptionJudge,
@@ -353,6 +354,46 @@ def test_codex_subscription_judge_skips_git_repo_check(fake_executables, tmp_pat
     )
 
     assert "--skip-git-repo-check" in judge._command()
+
+
+def test_codex_subscription_judge_preserves_jsonl_failure(
+    fake_executables, tmp_path
+):
+    class FailedJudgeDriver(FakeDriver):
+        def run(self, args, *, cwd, input_text=None, timeout, env=None):
+            stdout = json.dumps(
+                {
+                    "type": "error",
+                    "message": "invalid_json_schema: uniqueItems is unsupported",
+                }
+            )
+            return ProcessResult(tuple(args), 1, stdout + "\n", "", 4)
+
+    root = tmp_path / "judge-track"
+    judge = _SubscriptionJudge(
+        "codex-cli",
+        "gpt-5.6-sol",
+        tmp_path / "prepared-experiment",
+        root / "judge-schema.json",
+        driver=FailedJudgeDriver(),
+        executable_overrides=fake_executables,
+        schema=NWAY_JUDGE_SCHEMA,
+    )
+
+    with pytest.raises(RunnerError, match="uniqueItems is unsupported"):
+        judge("private judge prompt")
+    failure = json.loads((root / "calls" / "0001.failure.json").read_text())
+    assert failure["event_types"] == ["error"]
+    assert failure["requested_model"] == "gpt-5.6-sol"
+    assert (root / "calls" / "0001.raw.txt").is_file()
+    assert "private judge prompt" not in json.dumps(failure)
+
+
+def test_n_way_judge_schema_uses_supported_array_keywords():
+    ranking = NWAY_JUDGE_SCHEMA["properties"]["ranking"]
+
+    assert ranking["minItems"] == 2
+    assert "uniqueItems" not in ranking
 
 
 def test_preflight_is_read_only_and_probes_all_runners(
