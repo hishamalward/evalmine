@@ -301,7 +301,8 @@
       "required": ["required"],
       "properties": {
         "required": { "type": "boolean" },
-        "labels_per_pair": { "type": "integer", "minimum": 1 }
+        "labels_per_pair": { "type": "integer", "minimum": 1 },
+        "coverage": { "enum": ["complete-grid", "calibration-subset"] }
       }
     },
     "judgeEvaluation": {

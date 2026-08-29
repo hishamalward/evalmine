@@ -1,0 +1,29 @@
+external_artifacts: completed-jsonl-example
+version: 1
+question: Which completed condition produces the most useful structured summary?
+
+artifacts:
+  - path: completed.jsonl
+    sha256: b0670aba418cee8496f1977f593707df8097215e8c8e905899ab9e83466e2bfe
+
+evaluation:
+  objectives:
+    - Factual correctness
+    - Field-level usefulness
+  blind: condition
+  ranking_style: n-way
+  fields: [summary, risk]
+  human:
+    required: true
+    labels_per_pair: 1
+    coverage: calibration-subset
+  judge:
+    enabled: true
+    pairwise: false
+    position_swap: false
+    calibrate: true
+    runner: api-prompt
+    model: anthropic/claude-sonnet-5
+    max_cost_usd: 1.00
+    min_kappa: 0.60
+    min_labels: 2

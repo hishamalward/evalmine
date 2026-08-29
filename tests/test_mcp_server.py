@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import shutil
 
 import pytest
@@ -60,6 +62,58 @@ def fake_suite_doc():
     doc = copy.deepcopy(MINIMAL_SUITE)
     doc["judge"]["model"] = "fake/judge"
     return doc
+
+
+def test_import_external_artifacts_tool_is_zero_provider_and_root_scoped(mcp_env):
+    bundle = mcp_env / "external-bundle"
+    bundle.mkdir()
+    rows = [
+        {
+            "lane": "example",
+            "item_id": "one",
+            "account_id": "redacted",
+            "prompt": "Choose the better completed answer.",
+            "condition": {
+                "id": condition,
+                "model": f"provider/{condition}",
+                "prompt_variant": "v1",
+                "width": "default",
+            },
+            "output": f"output from {condition}",
+        }
+        for condition in ("a", "b")
+    ]
+    raw = b"".join((json.dumps(row) + "\n").encode() for row in rows)
+    (bundle / "completed.jsonl").write_bytes(raw)
+    manifest = {
+        "external_artifacts": "mcp-external",
+        "version": 1,
+        "question": "Which completed answer is stronger?",
+        "artifacts": [
+            {"path": "completed.jsonl", "sha256": hashlib.sha256(raw).hexdigest()}
+        ],
+        "evaluation": {
+            "objectives": ["Correctness"],
+            "blind": "condition",
+            "human": {"required": True, "coverage": "calibration-subset"},
+            "judge": {
+                "enabled": False,
+                "pairwise": True,
+                "position_swap": True,
+                "calibrate": True,
+            },
+        },
+    }
+    (bundle / "evalmine-import.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+    )
+    result = call_tool(
+        "import_external_artifacts_tool",
+        {"bundle_path": bundle.name, "out_dir": "external-evidence"},
+    )
+    assert result.is_error is False
+    assert result.structured_content["record_count"] == 2
+    assert result.structured_content["provider_calls"] is False
 
 
 # --------------------------------------------------------------------------

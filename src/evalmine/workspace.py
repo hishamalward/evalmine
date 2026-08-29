@@ -902,6 +902,19 @@ def _read_marker(root: str | Path) -> tuple[Path, dict[str, Any]]:
 
 def verify_prepared(root: str | Path) -> dict[str, Any]:
     """Verify preparation containment and that the baseline still matches."""
+    # Imported artifacts are a separate, zero-generation evidence envelope. They
+    # intentionally have no seed repository or workspaces, but report/judge/decide
+    # consume them through the same verification boundary.
+    from .external import is_external_import, verify_external_import
+
+    if is_external_import(root):
+        result = verify_external_import(root)
+        return {
+            **result,
+            "baseline_unchanged": None,
+            "workspace_mode": "external-artifacts",
+            "retry": None,
+        }
     resolved, marker = _read_marker(root)
     seed_repo = Path(marker["seed_repo"])
     run_keys = marker.get("run_keys")

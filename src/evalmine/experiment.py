@@ -130,6 +130,7 @@ class Evaluation:
     ranking_style: str
     human_required: bool
     labels_per_pair: int
+    human_coverage: str
     judge: dict[str, Any]
 
 
@@ -260,6 +261,7 @@ class ExperimentPlan:
                 "human": {
                     "required": experiment.evaluation.human_required,
                     "labels_per_pair": experiment.evaluation.labels_per_pair,
+                    "coverage": experiment.evaluation.human_coverage,
                 },
                 "judge": dict(experiment.evaluation.judge),
             },
@@ -557,6 +559,7 @@ def load_experiment(path: str | Path) -> Experiment:
             ranking_style=raw_evaluation.get("ranking_style", DEFAULT_RANKING_STYLE),
             human_required=bool(raw_human["required"]),
             labels_per_pair=int(raw_human.get("labels_per_pair", 1)),
+            human_coverage=str(raw_human.get("coverage", "complete-grid")),
             judge=dict(raw_evaluation["judge"]),
         ),
         path=path.resolve(),

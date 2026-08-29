@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evalmine.dev/schemas/external-record.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lane", "item_id", "condition", "account_id", "prompt", "output"],
+  "properties": {
+    "lane": { "type": "string", "minLength": 1 },
+    "item_id": { "type": "string", "minLength": 1 },
+    "account_id": { "type": "string", "minLength": 1 },
+    "prompt": { "type": "string", "minLength": 1 },
+    "output": {},
+    "fields": { "type": "object", "minProperties": 1 },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "model", "prompt_variant", "width"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "prompt_variant": { "type": "string", "minLength": 1 },
+        "width": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "integer", "minimum": 1 }
+          ]
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "cost_receipts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "estimated": { "$ref": "#/$defs/receipt" },
+        "ledger": { "$ref": "#/$defs/receipt" },
+        "dashboard_observed": { "$ref": "#/$defs/receipt" }
+      }
+    },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "usage": { "type": "object" },
+    "metadata": { "type": "object" }
+  },
+  "$defs": {
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usd", "source"],
+      "properties": {
+        "usd": { "type": "number", "minimum": 0 },
+        "source": { "type": "string", "minLength": 1 },
+        "observed_at": { "type": "string", "minLength": 1 },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

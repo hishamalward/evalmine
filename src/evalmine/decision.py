@@ -623,6 +623,7 @@ def judge_experiment(
     ranking_style: str | None = None,
     runner_override: str | None = None,
     model_override: str | None = None,
+    calibration_label_paths: Sequence[str | Path] | None = None,
     output: str | Path | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> JudgingResult:
@@ -635,6 +636,47 @@ def judge_experiment(
     if not config.get("enabled"):
         raise JudgeRefused("this experiment has evaluation.judge.enabled=false")
     ranking_style = str(report.get("ranking_style", "pairwise"))
+    coverage_mode = str(report.get("human", {}).get("coverage", "complete-grid"))
+    staged_calibration = coverage_mode == "calibration-subset"
+    calibration_consensus: dict[str, str] = {}
+    calibration_pair_ids: set[str] = set()
+    calibration_sources: list[dict[str, Any]] = []
+    calibration_source_bytes: list[bytes] = []
+    if staged_calibration:
+        if not calibration_label_paths:
+            raise JudgeRefused(
+                "calibration-subset judging requires independent human labels via --labels"
+            )
+        calibration_labels, sources = _load_human_labels(
+            calibration_label_paths, report
+        )
+        for index, source in enumerate(sources, 1):
+            raw = Path(source["path"]).read_bytes()
+            copy_path = f"calibration-labels/{index:03d}.json"
+            calibration_sources.append(
+                {
+                    **source,
+                    "content_sha256": hashlib.sha256(raw).hexdigest(),
+                    "evidence_copy": copy_path,
+                }
+            )
+            calibration_source_bytes.append(raw)
+        calibration_consensus = _consensus(calibration_labels)
+        calibration_pair_ids = {
+            pair_id
+            for pair_id, category in calibration_consensus.items()
+            if category != "unclear"
+        }
+        if not calibration_pair_ids:
+            raise JudgeRefused(
+                "calibration-subset judging requires at least one usable human label"
+            )
+        min_labels = int(config.get("min_labels", DEFAULT_MIN_LABELS))
+        if len(calibration_pair_ids) < min_labels:
+            raise JudgeRefused(
+                f"calibration-subset has {len(calibration_pair_ids)} usable pair labels, "
+                f"fewer than the configured minimum of {min_labels}; no judge calls made"
+            )
     style_from_plan = report.get("ranking_style_source") == "plan"
     if ranking_style == "pairwise":
         if style_from_plan and (not config.get("pairwise") or not config.get("position_swap")):
@@ -720,11 +762,34 @@ def judge_experiment(
     if not judging_root.exists():
         judging_root.parent.mkdir(parents=True, exist_ok=True)
         judging_root.mkdir()
+    for source, raw in zip(
+        calibration_sources, calibration_source_bytes, strict=True
+    ):
+        _write_read_only(judging_root / source["evidence_copy"], raw)
     rows: list[dict[str, Any]] = []
     ranking_rows: list[dict[str, Any]] = []
     total_cost = 0.0
     cost_complete = True
     call_index = 0
+    calibration_gate: dict[str, Any] | None = None
+    judging_status = "completed"
+
+    def evaluate_calibration_gate() -> dict[str, Any]:
+        judged = {row["pair_id"]: row for row in rows}
+        calibration_rows = []
+        for pair_id in sorted(calibration_pair_ids):
+            row = judged.get(pair_id)
+            if row is None or row.get("score") is None:
+                continue
+            calibration_rows.append(
+                (judge_category(float(row["score"])), calibration_consensus[pair_id])
+            )
+        return calibration_status(
+            cohens_kappa(calibration_rows),
+            float(config.get("min_kappa", DEFAULT_MIN_KAPPA)),
+            int(config.get("min_labels", DEFAULT_MIN_LABELS)),
+        )
+
     if progress is not None:
         progress(
             {
@@ -735,7 +800,18 @@ def judge_experiment(
             }
         )
     if ranking_style == "pairwise":
-        for pair in report["pairs"]:
+        pair_sequence = (
+            sorted(
+                report["pairs"],
+                key=lambda pair: pair["pair_id"] not in calibration_pair_ids,
+            )
+            if staged_calibration
+            else report["pairs"]
+        )
+        calibration_pair_count = sum(
+            pair["pair_id"] in calibration_pair_ids for pair in pair_sequence
+        )
+        for pair_position, pair in enumerate(pair_sequence, 1):
             ordered_keys = sorted((pair["a_run_key"], pair["b_run_key"]))
             passes = []
             for order in (1, 2):
@@ -796,8 +872,29 @@ def judge_experiment(
                     "passes": passes,
                 }
             )
+            if staged_calibration and pair_position == calibration_pair_count:
+                calibration_gate = evaluate_calibration_gate()
+                if not calibration_gate["headline_eligible"]:
+                    judging_status = "calibration_failed"
+                    break
     else:
-        for ranking in report["rankings"]:
+        calibration_blocks = {
+            pair["block"]
+            for pair in report["pairs"]
+            if pair["pair_id"] in calibration_pair_ids
+        }
+        ranking_sequence = (
+            sorted(
+                report["rankings"],
+                key=lambda ranking: ranking["block"] not in calibration_blocks,
+            )
+            if staged_calibration
+            else report["rankings"]
+        )
+        calibration_ranking_count = sum(
+            ranking["block"] in calibration_blocks for ranking in ranking_sequence
+        )
+        for ranking_position, ranking in enumerate(ranking_sequence, 1):
             call_index += 1
             prompt = build_episode_ranking_prompt(ranking, report["objectives"])
             if progress is not None:
@@ -863,6 +960,11 @@ def judge_experiment(
                         "source_ranking_id": ranking["ranking_id"],
                     }
                 )
+            if staged_calibration and ranking_position == calibration_ranking_count:
+                calibration_gate = evaluate_calibration_gate()
+                if not calibration_gate["headline_eligible"]:
+                    judging_status = "calibration_failed"
+                    break
     payload = {
         "format": JUDGING_FORMAT,
         "created_at": _now(),
@@ -880,6 +982,11 @@ def judge_experiment(
         "estimated_cost_usd": estimate,
         "cost_usd": total_cost if cost_complete else None,
         "cost_complete": cost_complete,
+        "calibration_gate": calibration_gate,
+        "calibration_label_sources": calibration_sources,
+        "calibration_pair_ids": sorted(calibration_pair_ids),
+        "extension_started": not staged_calibration
+        or bool(calibration_gate and calibration_gate["headline_eligible"]),
         "pair_count": len(rows),
         "call_count": call_index,
         "pairs": rows,
@@ -889,7 +996,7 @@ def judge_experiment(
     _write_read_only(judging_root / "pairs.json", _json_bytes(payload))
     marker = {
         **{key: payload[key] for key in ("format", "created_at", "prepared_root", "plan_id")},
-        "status": "completed",
+        "status": judging_status,
         "pair_count": len(rows),
         "ranking_count": len(ranking_rows),
         "ranking_style": ranking_style,
@@ -906,11 +1013,11 @@ def judge_experiment(
                 "ranking_style": ranking_style,
                 "call_count": call_index,
                 "pair_count": len(rows),
-                "status": "completed",
+                "status": judging_status,
                 "model": model,
             }
         )
-    return JudgingResult(judging_root, len(rows), call_index, "completed")
+    return JudgingResult(judging_root, len(rows), call_index, judging_status)
 
 
 def verify_judging(
@@ -995,6 +1102,70 @@ def _load_human_labels(
                     positions = {
                         run_key: index for index, run_key in enumerate(ranked_run_keys)
                     }
+                expected_fields = [str(field) for field in ranking.get("fields", [])]
+                supplied_field_rows = row.get("field_labels", [])
+                if not isinstance(supplied_field_rows, list):
+                    raise DecisionError(f"{path}: field_labels must be a list")
+                field_labels: list[dict[str, Any]] = []
+                if expected_fields and not unclear:
+                    supplied_names = [
+                        str(item.get("field"))
+                        for item in supplied_field_rows
+                        if isinstance(item, dict)
+                    ]
+                    if sorted(supplied_names) != sorted(expected_fields):
+                        raise DecisionError(
+                            f"{path}: ranking {ranking_id} must label every declared field"
+                        )
+                for field_row in supplied_field_rows:
+                    if not isinstance(field_row, dict):
+                        raise DecisionError(f"{path}: malformed field label for {ranking_id}")
+                    field = str(field_row.get("field"))
+                    if field not in expected_fields:
+                        raise DecisionError(
+                            f"{path}: unknown field {field!r} for ranking {ranking_id}"
+                        )
+                    best = field_row.get("best_label")
+                    if best not in expected_labels | {"tie", "unclear"}:
+                        raise DecisionError(
+                            f"{path}: invalid best label for {ranking_id}/{field}"
+                        )
+                    wrong = field_row.get("wrong_labels", [])
+                    if (
+                        not isinstance(wrong, list)
+                        or any(label not in expected_labels for label in wrong)
+                        or len(set(wrong)) != len(wrong)
+                    ):
+                        raise DecisionError(
+                            f"{path}: invalid wrong labels for {ranking_id}/{field}"
+                        )
+                    if best in wrong:
+                        raise DecisionError(
+                            f"{path}: best outcome is also marked wrong for {ranking_id}/{field}"
+                        )
+                    best_run_key = ranking["run_key_by_label"].get(best)
+                    wrong_run_keys = [ranking["run_key_by_label"][label] for label in wrong]
+                    if field_row.get("best_run_key") not in {None, best_run_key}:
+                        raise DecisionError(
+                            f"{path}: best-run mapping is inconsistent for {ranking_id}/{field}"
+                        )
+                    provided_wrong_run_keys = field_row.get("wrong_run_keys")
+                    if (
+                        provided_wrong_run_keys is not None
+                        and provided_wrong_run_keys != wrong_run_keys
+                    ):
+                        raise DecisionError(
+                            f"{path}: wrong-run mapping is inconsistent for {ranking_id}/{field}"
+                        )
+                    field_labels.append(
+                        {
+                            "field": field,
+                            "best_label": best,
+                            "best_run_key": best_run_key,
+                            "wrong_labels": list(wrong),
+                            "wrong_run_keys": wrong_run_keys,
+                        }
+                    )
                 for pair in (
                     item for item in report["pairs"] if item["block"] == ranking["block"]
                 ):
@@ -1022,6 +1193,7 @@ def _load_human_labels(
                             "choice": "ranking",
                             "category": category,
                             "note": row.get("note"),
+                            "field_labels": field_labels,
                             "identities_revealed": bool(row.get("identities_revealed")),
                         }
                     )
@@ -1301,11 +1473,31 @@ def _n_way_review(
             if not isinstance(row, dict) or row.get("unclear"):
                 continue
             run_keys = row.get("ranked_run_keys") or []
+            field_labels = []
+            for field_row in row.get("field_labels", []):
+                if not isinstance(field_row, dict):
+                    continue
+                best_run_key = field_row.get("best_run_key")
+                field_labels.append(
+                    {
+                        "field": field_row.get("field"),
+                        "best": (
+                            run_to_arm.get(str(best_run_key), str(best_run_key))
+                            if best_run_key
+                            else field_row.get("best_label")
+                        ),
+                        "wrong": [
+                            run_to_arm.get(str(run_key), str(run_key))
+                            for run_key in field_row.get("wrong_run_keys", [])
+                        ],
+                    }
+                )
             human.append(
                 {
                     "ranking_id": row.get("ranking_id"),
                     "arms": [run_to_arm.get(str(run_key), str(run_key)) for run_key in run_keys],
                     "note": row.get("note"),
+                    "field_labels": field_labels,
                     "identities_revealed": bool(row.get("identities_revealed")),
                     "identity_reveal_attestation": row.get("identity_reveal_attestation"),
                 }
@@ -1366,6 +1558,9 @@ def _analyze_judging(
         "runtime": _judge_runtime_summary(prepared, judging, judging_root=artifact_root),
         "n_way_rankings": _n_way_review(report, [], judging)["judge"],
         "judged_pairs": sum(row.get("score") is not None for row in judge_pairs.values()),
+        "judged_pair_ids": sorted(
+            pair_id for pair_id, row in judge_pairs.items() if row.get("score") is not None
+        ),
         "calibration": calibration,
         "per_episode_agreement": per_task_agreement(task_rows),
         "disagreements": disagreements,
@@ -1426,31 +1621,56 @@ def build_decision_data(
         if usable_counts.get(pair["pair_id"], 0) < labels_per_pair
     )
     human_complete = not under_labelled_pairs
+    coverage_mode = str(report["human"].get("coverage", "complete-grid"))
+    judge_complete = bool(
+        judge_lanes
+        and all(lane["judged_pairs"] == report["pair_count"] for lane in judge_lanes)
+    )
+    human_coverage_gate = human_complete if coverage_mode == "complete-grid" else True
     headline_eligible = bool(
         judge_lanes
         and all(lane["calibration"]["headline_eligible"] for lane in judge_lanes)
-        and human_complete
+        and judge_complete
+        and human_coverage_gate
     )
-    human_scores = [
-        row for row in arm_rankings if row["human"]["score"] is not None
-    ]
-    top_arm = human_scores[0]["arm"] if human_complete and human_scores else None
-    tied_top = (
-        len(human_scores) > 1
-        and human_scores[0]["human"]["score"] == human_scores[1]["human"]["score"]
+    human_scores = sorted(
+        (row for row in arm_rankings if row["human"]["score"] is not None),
+        key=lambda row: (-float(row["human"]["score"]), row["arm"]),
+    )
+    judge_scores = sorted(
+        (row for row in arm_rankings if row["judge"]["score"] is not None),
+        key=lambda row: (-float(row["judge"]["score"]), row["arm"]),
+    )
+    recommendation_lane = judge_scores if headline_eligible else human_scores
+    recommendation_key = "judge" if headline_eligible else "human"
+    can_recommend = headline_eligible or human_complete
+    top_arm = recommendation_lane[0]["arm"] if can_recommend and recommendation_lane else None
+    tied_top = bool(
+        len(recommendation_lane) > 1
+        and recommendation_lane[0][recommendation_key]["score"]
+        == recommendation_lane[1][recommendation_key]["score"]
     )
     recommendation = {
         "status": (
-            "insufficient-human-labels"
-            if not human_complete
-            else "tie"
+            "tie"
             if tied_top
+            else "calibrated-judge-preferred"
+            if headline_eligible and top_arm
             else "human-preferred"
             if top_arm
+            else "insufficient-human-labels"
+            if not human_complete
             else "no-comparable-labels"
         ),
         "arm": None if tied_top else top_arm,
-        "basis": "blind human aggregate; judge headline requires calibration",
+        "basis": (
+            "calibrated judge aggregate over the full grid; human labels are the "
+            "calibration subset"
+            if headline_eligible and coverage_mode == "calibration-subset"
+            else "calibrated judge aggregate over the full grid"
+            if headline_eligible
+            else "blind human aggregate; judge headline requires calibration"
+        ),
     }
     ranking_style = str(
         judging.get("ranking_style") if judging else report.get("ranking_style", "pairwise")
@@ -1463,6 +1683,20 @@ def build_decision_data(
         "experiment": report["experiment"],
         "question": report["question"],
         "objectives": report["objectives"],
+        "source_format": report.get("source_format"),
+        "external_cost_receipts": report.get("pricing", {}).get("receipt_totals"),
+        "external_artifacts": [
+            {
+                "lane": run.get("external", {}).get("lane"),
+                "item_id": run.get("external", {}).get("item_id"),
+                "account_id": run.get("external", {}).get("account_id"),
+                "condition": run.get("condition"),
+                "receipts": run.get("billing", {}).get("receipts", {}),
+                "reconciliation": run.get("billing", {}).get("reconciliation", {}),
+            }
+            for run in report.get("runs", [])
+            if run.get("billing", {}).get("basis") == "external-receipts"
+        ],
         "ranking_style": ranking_style,
         "arms": report["arms"],
         "pair_count": report["pair_count"],
@@ -1487,6 +1721,18 @@ def build_decision_data(
         "arm_rankings": arm_rankings,
         "under_labelled_pairs": under_labelled_pairs,
         "human_complete": human_complete,
+        "human_coverage": coverage_mode,
+        "judge_complete": judge_complete,
+        "evidence_populations": {
+            "human_calibration_pairs": len(
+                {pair_id for pair_id, category in consensus.items() if category != "unclear"}
+            ),
+            "judge_total_pairs": primary_lane["judged_pairs"] if primary_lane else 0,
+            "judge_extended_pairs": len(
+                set(primary_lane["judged_pair_ids"] if primary_lane else [])
+                - {pair_id for pair_id, category in consensus.items() if category != "unclear"}
+            ),
+        },
         "recommendation": recommendation,
         "headline_eligible": headline_eligible,
     }
@@ -1524,11 +1770,108 @@ def render_decision_html(data: dict[str, Any]) -> str:
         if recommendation.get("arm")
         else f"No single arm recommendation: {recommendation['status']}."
     )
+    populations = data.get("evidence_populations", {})
+    population_html = (
+        '<section><div class="eyebrow">Evidence populations</div>'
+        '<h2>Human calibration and judge extension stay separate</h2><div class="grid">'
+        f'<div class="card"><small>Human calibration subset</small><b>{_esc(populations.get("human_calibration_pairs", 0))}</b></div>'
+        f'<div class="card"><small>Judge-scored total</small><b>{_esc(populations.get("judge_total_pairs", 0))}</b></div>'
+        f'<div class="card"><small>Judge-only extension</small><b>{_esc(populations.get("judge_extended_pairs", 0))}</b></div>'
+        f'<div class="card"><small>Human coverage policy</small><b style="font-size:18px">{_esc(data.get("human_coverage"))}</b></div>'
+        "</div><p>The judge-only rows become headline evidence only when the judge passes "
+        "calibration against the independent human subset and scores the full grid.</p></section>"
+    )
+    external_arms = [arm for arm in data.get("arms", []) if isinstance(arm.get("condition"), dict)]
+    condition_rows = "".join(
+        f"<tr><td><code>{_esc(arm['condition'].get('id'))}</code></td>"
+        f"<td><code>{_esc(arm['condition'].get('model'))}</code></td>"
+        f"<td>{_esc(arm['condition'].get('prompt_variant'))}</td>"
+        f"<td>{_esc(arm['condition'].get('width'))}</td></tr>"
+        for arm in external_arms
+    )
+    condition_html = (
+        '<section><div class="eyebrow">Condition reveal</div>'
+        '<h2>Blind labels mapped to full conditions</h2><table><thead><tr>'
+        '<th>Condition</th><th>Model</th><th>Prompt variant</th><th>Width</th>'
+        f"</tr></thead><tbody>{condition_rows}</tbody></table></section>"
+        if condition_rows
+        else ""
+    )
+    external_costs = data.get("external_cost_receipts")
+    cost_html = ""
+    if isinstance(external_costs, dict):
+        cost_rows = "".join(
+            f"<tr><td>{_esc(basis.replace('_', ' '))}</td>"
+            f"<td>${float(external_costs.get(basis, {}).get('usd', 0)):.6f}</td>"
+            f"<td>{_esc(external_costs.get(basis, {}).get('receipt_count', 0))}/"
+            f"{_esc(external_costs.get(basis, {}).get('artifact_count', 0))}</td></tr>"
+            for basis in ("estimated", "ledger", "dashboard_observed")
+        )
+        ratio_rows = "".join(
+            f"<li>{_esc(name.replace('_', ' '))}: "
+            + (f"{float(value):.4f}×" if isinstance(value, (int, float)) else "unavailable")
+            + "</li>"
+            for name, value in external_costs.get("reconciliation", {}).items()
+        )
+        cost_html = (
+            '<section><div class="eyebrow">External cost reconciliation</div>'
+            '<h2>Receipts remain separated by basis</h2><table><thead><tr>'
+            f"<th>Basis</th><th>USD total</th><th>Coverage</th></tr></thead><tbody>{cost_rows}"
+            f"</tbody></table><ul>{ratio_rows}</ul>"
+            "<p>No blended cost is calculated.</p></section>"
+        )
+    external_artifacts = data.get("external_artifacts", [])
+    artifact_cost_html = ""
+    if external_artifacts:
+        artifact_rows = ""
+        for artifact in external_artifacts:
+            receipts = artifact.get("receipts", {})
+            ratios = artifact.get("reconciliation", {})
+            values = []
+            for basis in ("estimated", "ledger", "dashboard_observed"):
+                receipt = receipts.get(basis)
+                values.append(
+                    f"${float(receipt['usd']):.6f} · {receipt.get('source')}"
+                    if isinstance(receipt, dict)
+                    else "unavailable"
+                )
+            reconciliation = ", ".join(
+                f"{name.replace('_', ' ')}="
+                + (f"{float(value):.4f}×" if isinstance(value, (int, float)) else "n/a")
+                for name, value in ratios.items()
+            )
+            artifact_rows += (
+                f"<tr><td>{_esc(artifact.get('lane'))}</td>"
+                f"<td>{_esc(artifact.get('item_id'))}</td>"
+                f"<td>{_esc(artifact.get('account_id'))}</td>"
+                f"<td><code>{_esc((artifact.get('condition') or {}).get('id'))}</code></td>"
+                f"<td>{_esc(values[0])}</td><td>{_esc(values[1])}</td>"
+                f"<td>{_esc(values[2])}</td><td>{_esc(reconciliation)}</td></tr>"
+            )
+        artifact_cost_html = (
+            '<section><div class="eyebrow">Artifact cost receipts</div>'
+            '<h2>Each artifact, side by side by basis</h2><table><thead><tr>'
+            '<th>Lane</th><th>Item</th><th>Account</th><th>Condition</th><th>Estimated</th>'
+            '<th>Ledger</th><th>Dashboard observed</th><th>Reconciliation</th>'
+            f"</tr></thead><tbody>{artifact_rows}</tbody></table></section>"
+        )
     n_way_review = data.get("n_way_review", {})
     human_rankings = "".join(
         "<article><h3>Human ranking</h3><ol>"
         + "".join(f"<li>{_esc(arm)}</li>" for arm in row.get("arms", []))
-        + f"</ol><p>{_esc(row.get('note'))}</p>"
+        + "</ol>"
+        + (
+            "<h4>Field labels</h4><ul>"
+            + "".join(
+                f"<li><b>{_esc(field.get('field'))}</b>: best {_esc(field.get('best'))}; "
+                f"wrong {_esc(', '.join(field.get('wrong', [])) or 'none')}</li>"
+                for field in row.get("field_labels", [])
+            )
+            + "</ul>"
+            if row.get("field_labels")
+            else ""
+        )
+        + f"<p>{_esc(row.get('note'))}</p>"
         + (
             "<p><small>Recorded blind: identities were revealed after labeling "
             "per operator attestation.</small></p>"
@@ -1650,11 +1993,15 @@ def render_decision_html(data: dict[str, Any]) -> str:
 </style></head><body><header><div class="eyebrow">evalmine · decision evidence</div><h1>{_esc(data['question'])}</h1><p>{_esc(data['experiment'])} · plan <code>{_esc(data['plan_id'])}</code></p></header><main>
 <div class="grid"><div class="card"><small>{pair_label}</small><b>{data['pair_count']}</b></div><div class="card"><small>Human-labelled</small><b>{data['labelled_pairs']}</b></div><div class="card"><small>Judges</small><b>{data.get('judge_count', 0)}</b></div><div class="card"><small>Judged per lane</small><b>{data['judged_pairs']}</b></div></div>
 <section class="{'ok' if recommendation.get('arm') else 'warn'}"><div class="eyebrow">Decision</div><h2>{_esc(recommendation_text)}</h2><p>{_esc(recommendation['basis'])}</p></section>
+{population_html}
 {calibration_html}
 {n_way_html}
 {runtime_html}
 {evidence_html}
 {audit_html}
+{condition_html}
+{cost_html}
+{artifact_cost_html}
 <section><div class="eyebrow">Interpretation</div><h2>What this report can claim</h2><p>{'The judge passed calibration and its aggregate results may be used as headline evidence.' if data['headline_eligible'] else 'Use the human rows and inspect disagreements. Judge aggregates are shown diagnostically, but the calibration gate prevents treating them as a headline conclusion.'}</p><p>{data['identities_revealed_labels']} imported labels were recorded after identity reveal.</p></section></main><footer>Generated {_esc(data['generated_at'])} · self-contained · raw evidence remains beside this report</footer></body></html>"""
 
 

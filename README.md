@@ -44,7 +44,7 @@ contract, dry-run planner, and isolated workspace/evidence substrate are impleme
 the subscription runner boundary for Claude Code, Codex CLI, and Gemini CLI, objective
 validators, workflow DAG, blind episode report, portable human labeling, configurable
 pairwise or N-way episode ranking, position-swapped pairwise judging, calibration,
-decision HTML, and v2 MCP control plane are
+decision HTML, first-class import of completed JSONL artifacts, and v2 MCP control plane are
 implemented. Real subscription-backed dogfooding still requires an explicit operator
 run and human labels. No decision-log entry exists yet — see
 [Not yet](#not-yet).
@@ -311,7 +311,9 @@ Run the configured judge twice per pair with complete outcomes position-swapped.
 judge can use a subscription CLI, or `runner: api-prompt` with a positive cost cap:
 
 ```bash
-./.venv/bin/evalmine experiment judge <prepared-dir> --allow-provider-calls
+./.venv/bin/evalmine experiment judge <prepared-dir> \
+  --labels ~/Downloads/<experiment>-<plan-id>-labels.json \
+  --allow-provider-calls
 
 ./.venv/bin/evalmine experiment decide <prepared-dir> \
   --labels ~/Downloads/<experiment>-<plan-id>-labels.json
@@ -321,9 +323,65 @@ judge can use a subscription CLI, or `runner: api-prompt` with a positive cost c
 validates every label against the plan's tested A/B mapping, supports repeated label
 files for multiple annotators, computes consensus, position-swap scores, Cohen's kappa,
 per-episode agreement, bootstrap intervals, and a human↔judge disagreement queue. It
-writes `<prepared-dir>/decision/index.html`. A headline requires both the configured
-human-label coverage and judge-calibration gates; otherwise judge scores are explicitly
-diagnostic.
+writes `<prepared-dir>/decision/index.html`. Complete-grid experiments require every
+configured human label. A `calibration-subset` experiment instead runs the labeled subset
+first, requires the judge to pass its kappa/minimum-label gate, and only then judges the
+unlabeled extension grid. A failed gate stops without spending calls on the extension. The
+decision report keeps human calibration rows, judge-only extension rows, and their
+headlines visibly separate.
+
+### Import completed external artifacts
+
+When generation belongs to an application-owned harness, import its finished outputs
+without giving EvalMine database access or a generation command. A bundle is a directory
+containing `evalmine-import.yaml` plus one or more hash-pinned JSONL files:
+
+```bash
+./.venv/bin/evalmine experiment import examples/external-artifacts \
+  --out /tmp/evalmine-external-example
+
+./.venv/bin/evalmine experiment report /tmp/evalmine-external-example
+./.venv/bin/evalmine experiment judge /tmp/evalmine-external-example \
+  --labels ~/Downloads/<plan-id>-rankings.json \
+  --allow-provider-calls
+./.venv/bin/evalmine experiment decide /tmp/evalmine-external-example \
+  --labels ~/Downloads/<plan-id>-rankings.json
+```
+
+Import validates every line before writing a create-once envelope, verifies each source
+SHA-256, records source file/line provenance, and makes zero provider calls. Each JSONL
+record declares `lane`, `item_id`, `account_id`, the shared `prompt`, a full `condition`
+(`id`, `model`, `prompt_variant`, and `width`), the generated `output`, and optional cost
+receipts:
+
+```json
+{
+  "lane": "summary",
+  "item_id": "invoice-001",
+  "account_id": "account-redacted-a",
+  "prompt": "Summarize the invoice.",
+  "condition": {
+    "id": "model-a-prompt-v1-wide",
+    "model": "provider/model-a",
+    "prompt_variant": "v1",
+    "width": "wide"
+  },
+  "output": {"summary": "...", "risk": "low"},
+  "cost_receipts": {
+    "estimated": {"usd": 0.0012, "source": "pinned token estimate"},
+    "ledger": {"usd": 0.0013, "source": "external spend ledger"},
+    "dashboard_observed": {"usd": 0.0014, "source": "provider console delta"}
+  }
+}
+```
+
+The labeling deck uses opaque stable hashes, randomizes the complete condition, omits
+the identity mapping entirely, and reveals model/prompt/width only in the decision report.
+N-way bundles may declare structured `fields`; the deck then shows every model side by
+side and records both the best outcome and wrong-output flags per field. Estimated,
+ledger, and dashboard-observed costs are displayed separately with reconciliation ratios;
+they are never blended into one number. See the sanitized
+[external-artifacts example](examples/external-artifacts/evalmine-import.yaml).
 
 ### Run a backoff workflow DAG
 
@@ -518,6 +576,7 @@ episode and workflow controls that call the same library functions as the CLI:
 | `compare(report_a, report_b)` | the delta between two reports | nothing |
 | `last_report(suite_path)` | the most recent report for a suite | nothing |
 | `plan_experiment`, `prepare_experiment_tool`, `preflight_experiment_tool` | validate, isolate, and capability-probe episode experiments | nothing |
+| `import_external_artifacts_tool` | pin completed JSONL evidence for report/judge/decide | nothing |
 | `execute_experiment_tool`, `check_experiment_tool` | execute agents and objective checks behind independent server/client gates | subscription/provider calls only when authorized |
 | `report_experiment`, `decide_experiment`, `inspect_experiment` | label, calibrate/score, and verify evidence | nothing |
 | `judge_experiment_tool` | position-swapped episode judging | capped/gated |

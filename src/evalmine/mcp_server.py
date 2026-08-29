@@ -28,6 +28,7 @@ from .core import run_suite as core_run_suite
 from .decision import generate_decision_report, judge_experiment, verify_decision, verify_judging
 from .experiment import build_plan, load_experiment
 from .experiment_report import generate_experiment_report, verify_experiment_report
+from .external import import_external_artifacts, is_external_import
 from .runner import execute_experiment, preflight_experiment, verify_execution
 from .suite import load_suite
 from .validators import ValidationRefused, check_experiment, verify_validation
@@ -305,6 +306,16 @@ def experiment_prepare_impl(manifest_path: str, out_dir: str) -> dict[str, Any]:
     }
 
 
+def external_import_impl(bundle_path: str, out_dir: str) -> dict[str, Any]:
+    bundle = _resolve_under_root(bundle_path)
+    out = _resolve_under_root(out_dir)
+    if bundle is None:
+        return _path_refusal(bundle_path, "bundle_path")
+    if out is None:
+        return _path_refusal(out_dir, "out_dir")
+    return import_external_artifacts(bundle, out).as_dict()
+
+
 def experiment_inspect_impl(prepared_path: str) -> dict[str, Any]:
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
@@ -327,6 +338,12 @@ def experiment_preflight_impl(prepared_path: str) -> dict[str, Any]:
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
         return _path_refusal(prepared_path, "prepared_path")
+    if is_external_import(prepared):
+        return {
+            "refused": True,
+            "reason": "external_artifacts_already_completed",
+            "provider_calls": False,
+        }
     return preflight_experiment(prepared).as_dict()
 
 
@@ -339,6 +356,12 @@ def experiment_execute_impl(
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
         return _path_refusal(prepared_path, "prepared_path")
+    if is_external_import(prepared):
+        return {
+            "refused": True,
+            "reason": "external_artifacts_are_not_generated_by_evalmine",
+            "provider_calls": False,
+        }
     if not confirm_provider_calls or not _env_enabled("EVALMINE_MCP_ALLOW_PROVIDER_CALLS"):
         return {
             "refused": True,
@@ -364,6 +387,12 @@ def experiment_check_impl(
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
         return _path_refusal(prepared_path, "prepared_path")
+    if is_external_import(prepared):
+        return {
+            "refused": True,
+            "reason": "external_artifacts_do_not_run_experiment_validators",
+            "provider_calls": False,
+        }
     allow = confirm_validator_commands and _env_enabled(
         "EVALMINE_MCP_ALLOW_VALIDATOR_COMMANDS"
     )
@@ -395,6 +424,7 @@ def experiment_judge_impl(
     confirm_provider_calls: bool = False,
     max_cost_usd: float | None = None,
     ranking_style: str | None = None,
+    label_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     prepared = _resolve_under_root(prepared_path)
     if prepared is None:
@@ -412,11 +442,18 @@ def experiment_judge_impl(
     cap = max_cost_usd if max_cost_usd is not None else _env_float(
         "EVALMINE_MCP_MAX_COST", DEFAULT_MAX_COST
     )
+    resolved_labels = []
+    for path in label_paths or []:
+        resolved = _resolve_under_root(path)
+        if resolved is None:
+            return _path_refusal(path, "label_path")
+        resolved_labels.append(str(resolved))
     return judge_experiment(
         prepared,
         allow_provider_calls=True,
         max_cost_usd=cap,
         ranking_style=ranking_style,
+        calibration_label_paths=resolved_labels,
     ).as_dict()
 
 
@@ -528,6 +565,11 @@ try:
         return experiment_prepare_impl(manifest_path, out_dir)
 
     @server.tool(structured_output=True)
+    def import_external_artifacts_tool(bundle_path: str, out_dir: str) -> dict[str, Any]:
+        """Pin completed JSONL artifacts for blind evaluation; launches no provider."""
+        return external_import_impl(bundle_path, out_dir)
+
+    @server.tool(structured_output=True)
     def inspect_experiment(prepared_path: str) -> dict[str, Any]:
         """Verify all evidence envelopes currently present for an experiment."""
         return experiment_inspect_impl(prepared_path)
@@ -572,6 +614,7 @@ try:
         confirm_provider_calls: bool = False,
         max_cost_usd: float | None = None,
         ranking_style: str | None = None,
+        label_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run the configured ranking protocol behind provider and MCP cost gates."""
         return experiment_judge_impl(
@@ -579,6 +622,7 @@ try:
             confirm_provider_calls=confirm_provider_calls,
             max_cost_usd=max_cost_usd,
             ranking_style=ranking_style,
+            label_paths=label_paths,
         )
 
     @server.tool(structured_output=True)

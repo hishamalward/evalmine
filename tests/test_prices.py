@@ -18,15 +18,21 @@ from evalmine.prices import (
 
 def test_shipped_table_loads_and_declares_itself_verified():
     table = load_price_table(prices_dir=PRICES_DIR)
-    assert table.pinned == "2026-08-27"
+    assert table.pinned == "2026-08-29"
     assert table.currency == "USD"
-    # Re-verified 2026-08-27 against each provider's own pricing page.
+    # Re-verified 2026-08-29 against each provider's own pricing page.
     assert table.verified is True
     assert "UNVERIFIED" not in table.describe()
     for model in (
         "anthropic/claude-opus-5",
         "anthropic/claude-opus-4-6",
         "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
+        "kimi/kimi-k2.6",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+        "openrouter/qwen/qwen3.7-plus",
         "google/gemini-2.5-flash",
         "fake/a",
         "fake/b",
@@ -37,6 +43,16 @@ def test_shipped_table_loads_and_declares_itself_verified():
     sol = table.get("openai/gpt-5.6-sol")
     assert sol.long_context_threshold_tokens == 272_000
     assert sol.long_context_input_multiplier == 2.0
+    assert table.get("openai/gpt-5.6-terra").output_per_mtok == 12.0
+    assert table.get("openai/gpt-5.6-luna").input_per_mtok == 0.20
+    assert table.get("kimi/kimi-k2.6").cached_input_per_mtok == 0.16
+    flash = table.get("deepseek/deepseek-v4-flash")
+    assert flash.input_per_mtok == 0.22
+    assert flash.output_per_mtok == 0.66
+    assert flash.notes is not None and "01:00-04:00" in flash.notes
+    qwen = table.get("openrouter/qwen/qwen3.7-plus")
+    assert qwen.input_per_mtok == 0.32
+    assert qwen.output_per_mtok == 1.28
 
 
 def test_newest_table_is_chosen_by_pinned_date(tmp_path):
@@ -59,7 +75,7 @@ def test_unknown_model_raises_naming_the_string_and_the_file():
         table.get("anthropic/claude-does-not-exist")
     message = str(exc.value)
     assert "anthropic/claude-does-not-exist" in message
-    assert "prices-2026-08-27.yaml" in message
+    assert "prices-2026-08-29.yaml" in message
 
 
 def test_resolve_all_raises_on_the_first_unknown_model():

@@ -70,13 +70,23 @@ class GoogleAdapter:
         data, latency_ms = post_json(url, headers, body, req.timeout_s, self._transport, "google")
         text, finish_reason = _extract(data)
         usage = data.get("usageMetadata") if isinstance(data.get("usageMetadata"), dict) else {}
+        candidate_tokens = usage.get("candidatesTokenCount")
+        thought_tokens = int(usage.get("thoughtsTokenCount") or 0)
+        # Gemini reports thoughts separately from candidate tokens but bills both
+        # at the output rate. Response.output_tokens is the billed output count;
+        # reasoning_tokens remains available as the inspectable subset.
+        billed_output_tokens = (
+            int(candidate_tokens) + thought_tokens
+            if isinstance(candidate_tokens, (int, float)) and not isinstance(candidate_tokens, bool)
+            else None
+        )
 
         return Response(
             text=text,
             input_tokens=usage.get("promptTokenCount"),
-            output_tokens=usage.get("candidatesTokenCount"),
+            output_tokens=billed_output_tokens,
             cached_input_tokens=int(usage.get("cachedContentTokenCount") or 0),
-            reasoning_tokens=int(usage.get("thoughtsTokenCount") or 0),
+            reasoning_tokens=thought_tokens,
             latency_ms=latency_ms,
             finish_reason=finish_reason,
             schema_mode=self.schema_mode_for(req.schema),

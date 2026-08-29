@@ -48,6 +48,7 @@ class PriceRow:
     long_context_output_multiplier: float = 1.0
     source: str | None = None
     read_on: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ def _row_from(raw: dict[str, Any], path: Path) -> PriceRow:
             ),
             source=raw.get("source"),
             read_on=(str(raw["read_on"]) if raw.get("read_on") is not None else None),
+            notes=(str(raw["notes"]) if raw.get("notes") is not None else None),
         )
     except KeyError as exc:
         raise PriceTableError(f"{path}: a price row is missing {exc.args[0]!r}") from exc

@@ -466,7 +466,8 @@ def test_google_success_with_usage():
     resp = adapter.complete(req(model_id="gemini-x"))
     assert resp.text == "hello there"
     assert resp.input_tokens == 9
-    assert resp.output_tokens == 4
+    # Gemini bills the two thinking tokens at the output rate too.
+    assert resp.output_tokens == 6
     assert resp.cached_input_tokens == 1
     assert resp.reasoning_tokens == 2
     assert resp.finish_reason == "stop"

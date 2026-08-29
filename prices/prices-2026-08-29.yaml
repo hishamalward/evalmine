@@ -1,0 +1,180 @@
+# evalmine price table, pinned by date. Spec: docs/spec.md S6.3.
+#
+# Re-verified 2026-08-29 against provider-owned pricing pages. Rates are per
+# million tokens. Scheduled pricing is represented by the currently active
+# off-peak rate plus a row note that names every peak rate and window; callers
+# must not silently use that base estimate for a call made during a peak window.
+
+pinned: 2026-08-29
+currency: USD
+verified: true
+notes: >
+  Prices per million tokens. API list-price equivalents are estimates, not
+  subscription charges. There is no fallback price for an unknown model.
+  DeepSeek rows use the active off-peak rate as the numeric base and carry the
+  complete peak schedule in row-level notes.
+
+models:
+  - model: anthropic/claude-sonnet-4-6
+    input_per_mtok: 3.00
+    output_per_mtok: 15.00
+    cached_input_per_mtok: 0.30
+    cache_write_5m_per_mtok: 3.75
+    cache_write_1h_per_mtok: 6.00
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-29
+    verified: true
+
+  - model: anthropic/claude-haiku-4-5
+    input_per_mtok: 1.00
+    output_per_mtok: 5.00
+    cached_input_per_mtok: 0.10
+    cache_write_5m_per_mtok: 1.25
+    cache_write_1h_per_mtok: 2.00
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-29
+    verified: true
+
+  - model: anthropic/claude-opus-5
+    input_per_mtok: 5.00
+    output_per_mtok: 25.00
+    cached_input_per_mtok: 0.50
+    cache_write_5m_per_mtok: 6.25
+    cache_write_1h_per_mtok: 10.00
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-29
+    verified: true
+
+  - model: anthropic/claude-opus-4-6
+    input_per_mtok: 5.00
+    output_per_mtok: 25.00
+    cached_input_per_mtok: 0.50
+    cache_write_5m_per_mtok: 6.25
+    cache_write_1h_per_mtok: 10.00
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-29
+    verified: true
+
+  - model: anthropic/claude-sonnet-5
+    input_per_mtok: 2.00
+    output_per_mtok: 10.00
+    cached_input_per_mtok: 0.20
+    cache_write_5m_per_mtok: 2.50
+    cache_write_1h_per_mtok: 4.00
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    read_on: 2026-08-29
+    verified: true
+
+  - model: openai/gpt-5.6-sol
+    input_per_mtok: 4.00
+    output_per_mtok: 20.00
+    cached_input_per_mtok: 0.40
+    cache_write_5m_per_mtok: 5.00
+    long_context_threshold_tokens: 272000
+    long_context_input_multiplier: 2.00
+    long_context_output_multiplier: 1.50
+    source: https://developers.openai.com/api/docs/models/gpt-5.6-sol
+    read_on: 2026-08-29
+    verified: true
+
+  - model: openai/gpt-5.6-terra
+    input_per_mtok: 2.00
+    output_per_mtok: 12.00
+    cached_input_per_mtok: 0.20
+    cache_write_5m_per_mtok: 2.50
+    long_context_threshold_tokens: 272000
+    long_context_input_multiplier: 2.00
+    long_context_output_multiplier: 1.50
+    source: https://developers.openai.com/api/docs/models/gpt-5.6-terra
+    read_on: 2026-08-29
+    verified: true
+
+  - model: openai/gpt-5.6-luna
+    input_per_mtok: 0.20
+    output_per_mtok: 1.20
+    cached_input_per_mtok: 0.02
+    cache_write_5m_per_mtok: 0.25
+    long_context_threshold_tokens: 272000
+    long_context_input_multiplier: 2.00
+    long_context_output_multiplier: 1.50
+    source: https://developers.openai.com/api/docs/models/gpt-5.6-luna
+    read_on: 2026-08-29
+    verified: true
+
+  - model: kimi/kimi-k2.6
+    input_per_mtok: 0.95
+    output_per_mtok: 4.00
+    cached_input_per_mtok: 0.16
+    source: https://platform.kimi.ai/docs/pricing/chat-k26
+    read_on: 2026-08-29
+    verified: true
+
+  - model: deepseek/deepseek-v4-flash
+    input_per_mtok: 0.22
+    output_per_mtok: 0.66
+    cached_input_per_mtok: 0.007
+    source: https://api-docs.deepseek.com/quick_start/pricing/
+    read_on: 2026-08-29
+    verified: true
+    notes: >
+      Numeric fields are off-peak. Monday-Friday peak windows are 01:00-04:00
+      and 06:00-10:00 UTC, when cache-hit input is $0.014/M, cache-miss input
+      is $0.44/M, and output is $1.32/M. Schedule effective 2026-08-16.
+
+  - model: deepseek/deepseek-v4-pro
+    input_per_mtok: 0.66
+    output_per_mtok: 1.98
+    cached_input_per_mtok: 0.022
+    source: https://api-docs.deepseek.com/quick_start/pricing/
+    read_on: 2026-08-29
+    verified: true
+    notes: >
+      Numeric fields are off-peak. Monday-Friday peak windows are 01:00-04:00
+      and 06:00-10:00 UTC, when cache-hit input is $0.044/M, cache-miss input
+      is $1.32/M, and output is $3.96/M. Schedule effective 2026-08-16.
+
+  - model: openrouter/qwen/qwen3.7-plus
+    input_per_mtok: 0.32
+    output_per_mtok: 1.28
+    cached_input_per_mtok: 0.064
+    cache_write_5m_per_mtok: 0.40
+    source: https://openrouter.ai/qwen/qwen3.7-plus/pricing
+    read_on: 2026-08-29
+    verified: true
+    notes: Promotional 20%-off OpenRouter rate displayed on the pinned date.
+
+  - model: google/gemini-2.5-flash
+    input_per_mtok: 0.30
+    output_per_mtok: 2.50
+    cached_input_per_mtok: 0.03
+    source: https://ai.google.dev/gemini-api/docs/pricing
+    read_on: 2026-08-29
+    verified: true
+
+  - model: fake/a
+    input_per_mtok: 1.00
+    output_per_mtok: 4.00
+    cached_input_per_mtok: 0.10
+    source: not a real model
+    read_on: 2026-08-29
+
+  - model: fake/b
+    input_per_mtok: 2.00
+    output_per_mtok: 8.00
+    cached_input_per_mtok: 0.20
+    source: not a real model
+    read_on: 2026-08-29
+
+  - model: fake/c
+    input_per_mtok: 0.50
+    output_per_mtok: 2.00
+    cached_input_per_mtok: 0.05
+    source: not a real model
+    read_on: 2026-08-29
+
+  - model: fake/judge
+    input_per_mtok: 0.25
+    output_per_mtok: 1.00
+    cached_input_per_mtok: 0.025
+    source: not a real model
+    read_on: 2026-08-29

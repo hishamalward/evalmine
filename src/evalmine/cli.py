@@ -37,6 +37,12 @@ from .experiment_report import (
     generate_experiment_report,
     verify_experiment_report,
 )
+from .external import (
+    ExternalArtifactError,
+    import_external_artifacts,
+    is_external_import,
+    verify_external_import,
+)
 from .metrics import format_kappa
 from .prices import PriceTableError, UnknownModelError, load_price_table
 from .report import render_markdown
@@ -252,6 +258,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="artifact base directory; must be outside the seed repository",
     )
     experiment_prepare.add_argument("--json", action="store_true")
+    experiment_import = experiment_subparsers.add_parser(
+        "import",
+        help="pin completed JSONL artifacts for blind report, judge, and decision",
+    )
+    experiment_import.add_argument(
+        "bundle",
+        help="directory containing evalmine-import.yaml and hash-pinned JSONL files",
+    )
+    experiment_import.add_argument(
+        "--out",
+        required=True,
+        help="exact create-once external evidence directory",
+    )
+    experiment_import.add_argument("--json", action="store_true")
     experiment_retry = experiment_subparsers.add_parser(
         "retry",
         help="prepare a derived envelope that executes only failed runs; launches nothing",
@@ -377,6 +397,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     experiment_judge.add_argument("--prices", default=None)
     experiment_judge.add_argument(
+        "--labels",
+        action="append",
+        default=None,
+        help="independent human label export (required for calibration-subset judging)",
+    )
+    experiment_judge.add_argument(
         "--fake", action="store_true", help="use the deterministic offline judge"
     )
     experiment_judge.add_argument("--json", action="store_true")
@@ -471,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         RunnerError,
         ValidationError,
         ExperimentReportError,
+        ExternalArtifactError,
         DecisionError,
         WorkflowError,
     ) as exc:
@@ -651,6 +678,18 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment(args: argparse.Namespace) -> int:
+    if args.experiment_verb == "import":
+        result = import_external_artifacts(args.bundle, args.out)
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(
+                f"imported {result.record_count} completed artifacts across "
+                f"{result.block_count} comparison blocks and {result.condition_count} "
+                f"conditions into {result.root}; provider calls: 0"
+            )
+        return EXIT_OK
+
     if args.experiment_verb == "retry":
         result = prepare_failed_run_retry(args.prepared, args.out)
         if args.json:
@@ -685,6 +724,13 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             result["decision"] = verify_decision(args.prepared)
         if args.json:
             print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+        elif is_external_import(args.prepared):
+            external = verify_external_import(args.prepared)
+            suffix = f"; report {report['pair_count']} blind pairs" if report else ""
+            print(
+                f"ok: {external['root']} - {external['record_count']} pinned external "
+                f"artifacts across {external['block_count']} blocks; provider calls: 0{suffix}"
+            )
         else:
             suffix = (
                 f"; execution {execution['status']} ({execution['succeeded']}/"
@@ -706,6 +752,10 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     if args.experiment_verb == "preflight":
+        if is_external_import(args.prepared):
+            raise ExperimentError(
+                "external artifacts are already completed; preflight is not applicable"
+            )
         overrides = _runner_executable_overrides(args.executable)
         result = preflight_experiment(args.prepared, executable_overrides=overrides)
         if args.json:
@@ -729,6 +779,10 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
         return EXIT_OK if result.ok else EXIT_REFUSED_PREFLIGHT
 
     if args.experiment_verb == "execute":
+        if is_external_import(args.prepared):
+            raise ExperimentError(
+                "external artifacts are already completed; import never launches generation"
+            )
         overrides = _runner_executable_overrides(args.executable)
         result = execute_experiment(
             args.prepared,
@@ -748,6 +802,10 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
         return EXIT_OK if result.status == "completed" else EXIT_RUNTIME
 
     if args.experiment_verb == "check":
+        if is_external_import(args.prepared):
+            raise ExperimentError(
+                "external artifacts carry completed outputs; experiment validators are not run"
+            )
         result = check_experiment(
             args.prepared,
             allow_validator_commands=args.allow_validator_commands,
@@ -796,6 +854,7 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             ranking_style=args.ranking_style,
             runner_override=args.runner,
             model_override=args.model,
+            calibration_label_paths=args.labels,
             output=args.out,
             progress=None if args.json else _print_experiment_progress,
         )

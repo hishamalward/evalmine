@@ -2035,9 +2035,14 @@ from consensus. A tied annotator vote becomes unclear rather than an invented pr
 
 The decision layer computes human and judge pair scores, deterministic bootstrap intervals,
 overall Cohen's kappa, per-episode agreement, disagreement rows, and all-arm aggregate
-rankings. A headline requires both the configured `labels_per_pair` coverage for every pair
-and the configured judge calibration gate (`min_labels`, default 10; `min_kappa`, default
-0.40). Otherwise the judge result is explicitly diagnostic. The self-contained
+rankings. `human.coverage: complete-grid` (the default) requires the configured
+`labels_per_pair` coverage for every pair. `human.coverage: calibration-subset` instead
+requires `experiment judge --labels <file>...` to evaluate the labeled subset first. The
+judge must clear `min_labels`/`min_kappa` before any unlabeled extension call is made; a
+failed gate terminates the judge lifecycle with `calibration_failed`. A passing judge then
+scores every pair in the full grid. The decision report gives human calibration, judge total,
+and judge-only extension distinct populations; it never presents extension rows as human
+labels. Otherwise the judge result is explicitly diagnostic. The self-contained
 `decision/index.html`, copied label inputs, full `data.json`, and `decision.json` hashes are
 create-once and covered by `experiment verify`.
 
@@ -2072,7 +2077,42 @@ and original human report without database or provider calls. It does not launch
 direct-API harness because that process lacks an externally enforceable pre-call USD cap.
 
 
-## 13G. Runner cost, plugin, and external-write controls
+## 13G. Completed external-artifact import
+
+`evalmine experiment import <bundle-dir> --out <exact-evidence-dir>` is the generation-free
+entry point. The bundle contains `evalmine-import.yaml` and one or more declared JSONL files.
+Every file has a required SHA-256. Import verifies hashes before parsing, validates every
+record, refuses an existing output path, copies the exact source bytes, writes one canonical
+normalized JSONL stream with source-file/line provenance, and hashes the resulting envelope.
+It launches no runner, command, database client, validator, or provider call.
+
+Each record requires `lane`, `item_id`, `account_id`, a shared `prompt`, `output`, and a
+`condition` with `id`, `model`, `prompt_variant`, and `width`. A comparison block is the
+tuple `(lane, item_id, account_id)`. It must contain at least two unique conditions and one
+identical prompt; each lane must have a consistent condition set. A condition id must map to
+the same complete condition metadata everywhere. Output may be text or JSON. When the
+manifest declares `evaluation.fields`, each record must supply those fields either through
+an explicit `fields` object or an object-valued `output`.
+
+Downstream `experiment report|judge|decide|verify` accept the imported root. Execution,
+preflight, retry, agent validators, and discard-as-workspace do not: imported evidence is
+already completed and has no seed checkout. The blind deck uses opaque run hashes and stable
+randomized columns. For external evidence it omits the identity-reveal control and all
+condition/model/prompt/width mappings; those appear first in the decision report. The
+companion `report/data.json` is the same blind projection rather than a hidden identity
+backdoor. N-way field decks retain the full ordering and additionally export, for every
+declared field, the blind best label and zero or more blind wrong-output flags. Import
+validates their opaque label-to-run mappings before decision scoring.
+
+`cost_receipts` may carry `estimated`, `ledger`, and `dashboard_observed`. Every present
+receipt requires `usd` and a source label. The report retains each basis independently,
+prints coverage and `ledger/estimated`, `dashboard/estimated`, and `dashboard/ledger`
+reconciliation ratios when denominators are positive, and never adds or averages the bases.
+Missing receipts remain unavailable. Costs are hidden from the labeling deck and shown in
+the identity-revealing decision report.
+
+
+## 13H. Runner cost, plugin, and external-write controls
 
 - `auth: api` on an agent arm requires a per-run `max_cost_usd`; only Claude Code is
   executable because its print mode exposes a native `--max-budget-usd`. Evalmine divides
@@ -2094,9 +2134,10 @@ direct-API harness because that process lacks an externally enforceable pre-call
   provider. Missing marginal cost is unavailable, never zero.
 
 
-## 13H. Version-2 MCP control plane
+## 13I. Version-2 MCP control plane
 
-The original capped suite tools remain. MCP also exposes episode plan, prepare, inspect,
+The original capped suite tools remain. MCP also exposes episode plan, prepare, external
+artifact import, inspect,
 preflight, execute, check, report, judge, and decide operations plus workflow plan, run,
 and inspect. All paths must remain inside `EVALMINE_MCP_SUITE_ROOT`. Read-only calls return
 summaries and artifact paths rather than raw model text.
