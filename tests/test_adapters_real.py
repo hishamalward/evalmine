@@ -1,4 +1,4 @@
-"""The three real HTTP adapters. Spec S10.
+"""The four real HTTP adapters. Spec S10.
 
 No test in this file makes a real network call: every request is served by
 ``httpx.MockTransport``, so there is nothing here that needs a key, contacts
@@ -20,6 +20,7 @@ from evalmine.adapters.anthropic import (
 from evalmine.adapters.base import AdapterError, Request
 from evalmine.adapters.google import GoogleAdapter
 from evalmine.adapters.openai import OpenAIAdapter
+from evalmine.adapters.openrouter import APP_TITLE, APP_URL, OpenRouterAdapter
 
 SCHEMA = {
     "type": "object",
@@ -431,6 +432,120 @@ def test_openai_reads_key_from_environment(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
     adapter = OpenAIAdapter()
     assert adapter.api_key == "sk-from-env"
+
+
+# --------------------------------------------------------------------------
+# OpenRouter
+# --------------------------------------------------------------------------
+
+
+OPENROUTER_SUCCESS = {
+    "id": "gen-test",
+    "model": "qwen/qwen3.7-plus",
+    "choices": [
+        {"message": {"role": "assistant", "content": "hello there"}, "finish_reason": "stop"}
+    ],
+    "usage": {
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "prompt_tokens_details": {"cached_tokens": 3, "cache_write_tokens": 1},
+        "completion_tokens_details": {"reasoning_tokens": 4},
+        "cost": 0.000012,
+    },
+}
+
+
+def test_openrouter_success_with_usage_and_attribution():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer sk-or-test"
+        assert request.headers["http-referer"] == APP_URL
+        assert request.headers["x-openrouter-title"] == APP_TITLE
+        body = json.loads(request.content)
+        assert body["model"] == "qwen/qwen3.7-plus"
+        assert body["messages"] == [
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hello"},
+        ]
+        assert body["max_completion_tokens"] == 700
+        return json_response(200, OPENROUTER_SUCCESS)
+
+    adapter = OpenRouterAdapter(api_key="sk-or-test", transport=transport(handler))
+    resp = adapter.complete(
+        req(model_id="qwen/qwen3.7-plus", system="be terse")
+    )
+    assert resp.text == "hello there"
+    assert resp.input_tokens == 11
+    assert resp.output_tokens == 7
+    assert resp.cached_input_tokens == 3
+    assert resp.reasoning_tokens == 4
+    assert resp.finish_reason == "stop"
+
+
+def test_openrouter_schema_request_requires_native_parameter_support():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "evalmine_response",
+                "schema": SCHEMA,
+                "strict": True,
+            },
+        }
+        assert body["provider"] == {"require_parameters": True}
+        return json_response(200, OPENROUTER_SUCCESS)
+
+    adapter = OpenRouterAdapter(api_key="sk-or-test", transport=transport(handler))
+    resp = adapter.complete(req(schema=SCHEMA))
+    assert resp.schema_mode == "native"
+    assert adapter.schema_mode_for(None) == "prompted"
+
+
+def test_openrouter_missing_usage_is_none_not_zero():
+    body = {
+        "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]
+    }
+    adapter = OpenRouterAdapter(
+        api_key="sk-or-test", transport=transport(lambda r: json_response(200, body))
+    )
+    resp = adapter.complete(req())
+    assert resp.input_tokens is None
+    assert resp.output_tokens is None
+    assert resp.cached_input_tokens == 0
+    assert resp.reasoning_tokens == 0
+
+
+@pytest.mark.parametrize("status,retryable", [(401, False), (429, True), (502, True)])
+def test_openrouter_http_error_retry_policy(status, retryable):
+    adapter = OpenRouterAdapter(
+        api_key="sk-or-test",
+        transport=transport(
+            lambda r: json_response(status, {"error": {"message": "failure"}})
+        ),
+    )
+    with pytest.raises(AdapterError) as exc:
+        adapter.complete(req())
+    assert exc.value.retryable is retryable
+    assert exc.value.status == status
+
+
+def test_openrouter_missing_key_fails_before_network(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-used")
+    calls = []
+    adapter = OpenRouterAdapter(
+        transport=transport(lambda r: calls.append(r) or json_response(200, OPENROUTER_SUCCESS))
+    )
+    with pytest.raises(AdapterError, match="OPENROUTER_API_KEY"):
+        adapter.complete(req())
+    assert calls == []
+
+
+def test_openrouter_reads_its_key_from_environment(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-from-env")
+    adapter = OpenRouterAdapter()
+    assert adapter.api_key == "sk-or-from-env"
 
 
 # --------------------------------------------------------------------------

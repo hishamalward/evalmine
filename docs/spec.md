@@ -87,13 +87,13 @@ harness's tasks, not Hisham's real tasks, and not anyone's production workload.
 schema-pass rate, latency, cost, and pairwise judge win-rate against a baseline
 with position swap and ties; judge calibration against human labels with a floor
 below which win-rates are not printed as a headline; disk caching by content
-hash; Markdown + JSON reports with a "what changed" section; three provider
-adapters (Anthropic, OpenAI, Google) behind one small interface, plus a fake
+hash; Markdown + JSON reports with a "what changed" section; four provider
+adapters (Anthropic, OpenAI, Google, OpenRouter) behind one small interface, plus a fake
 adapter; an MCP server exposing exactly three tools.
 
 **Out of the v1 suite engine — and the README says so.** RAG or retrieval eval;
 agent or multi-turn trajectories; fine-tuning; a web UI; anything hosted; more
-than three direct-API providers; rubric auto-generation; MCP tools beyond the
+than four direct-API providers; rubric auto-generation; MCP tools beyond the
 three in §11. The separately versioned v2 experiment substrate in §13A adds
 agent episodes without changing the v1 suite or report contract.
 
@@ -1300,11 +1300,11 @@ tested pure function; there is no untested mapping code anywhere in the feature.
 
 ## 10. Provider adapters
 
-One `Protocol`, four implementations, no framework, no LLM library:
+One `Protocol`, five implementations, no framework, no LLM library:
 
 ```python
 class Adapter(Protocol):
-    name: str          # "anthropic" | "openai" | "google" | "fake"
+    name: str          # "anthropic" | "openai" | "google" | "openrouter" | "fake"
     version: int       # part of the cache key; bump when the request changes
 
     def complete(self, req: Request) -> Response: ...
@@ -1329,9 +1329,16 @@ The fake adapter returns deterministic text derived from the cache key, with
 deterministic token counts and latency. It is what the whole test suite runs
 against, and `--fake` exposes it to users.
 
-**Keys** come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` only.
-Nothing else is read. `.env.example` lists the names. Keys are never written to a
-cache entry, a report, or a log line.
+OpenRouter has a dedicated `openrouter/<catalog-model-slug>` route. It calls
+`/api/v1/chat/completions`, preserves nested catalog slugs, sends evalmine attribution,
+and uses `response_format.type: json_schema` with strict mode. Schema requests also set
+`provider.require_parameters: true`, so routing fails rather than silently selecting an
+upstream that drops structured-output enforcement. Returned cached and reasoning-token
+counts use OpenRouter's detailed usage fields; completion tokens already include reasoning.
+
+**Keys** come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or
+`OPENROUTER_API_KEY` only. Nothing else is read. `.env.example` lists the names. Keys are
+never written to a cache entry, a report, or a log line.
 
 ---
 
@@ -1446,10 +1453,10 @@ Reads from disk only. Zero spend, always.
 |---|---|---|
 | `PyYAML` | `>=6.0` | the suite format |
 | `jsonschema` | `>=4.18` | Draft 2020-12 validation of both the suite and task outputs |
-| `httpx` | `>=0.27` | one HTTP client for all three providers |
+| `httpx` | `>=0.27` | one HTTP client for all four providers |
 
-That is three. **No provider SDKs**: three SDKs is three dependency trees, three
-release cadences, and three abstractions between the reader and the request. The
+That is three runtime packages. **No provider SDKs**: four SDKs would be four dependency
+trees, four release cadences, and four abstractions between the reader and the request. The
 stated point of the adapter layer is that it is small enough to read in one
 sitting, and a hand-written `POST` to a documented JSON endpoint is smaller than
 an SDK wrapper. The cost of this choice is real and should be stated in the

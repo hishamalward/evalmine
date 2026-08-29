@@ -27,9 +27,9 @@ class GoogleAdapter:
         api_key: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        #: Spec S10: keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY and
-        #: GOOGLE_API_KEY only - "nothing else is read". GEMINI_API_KEY is a
-        #: real convention elsewhere but is deliberately not honoured here.
+        #: Spec S10: Google authentication comes from GOOGLE_API_KEY only.
+        #: GEMINI_API_KEY is a real convention elsewhere but is deliberately
+        #: not honoured here.
         self.api_key = api_key if api_key is not None else os.environ.get("GOOGLE_API_KEY")
         self._transport = transport
 

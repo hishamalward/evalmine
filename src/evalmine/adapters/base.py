@@ -1,6 +1,6 @@
 """The adapter interface, and the retry policy every adapter shares.
 
-Spec: docs/spec.md S10. One Protocol, four implementations, no framework and no
+Spec: docs/spec.md S10. One Protocol, five implementations, no framework and no
 provider SDK - the stated point of this layer is that it is small enough to read
 in one sitting.
 """
@@ -92,7 +92,7 @@ def post_json(
 ) -> tuple[dict[str, Any], int]:
     """POST ``body`` as JSON, mapping every transport/HTTP failure onto ``AdapterError``.
 
-    Shared by all three real adapters - the one bit of HTTP boilerplate common
+    Shared by all four real adapters - the one bit of HTTP boilerplate common
     to a hand-written POST against a documented JSON endpoint. ``transport``
     exists only so tests can substitute ``httpx.MockTransport``; production
     code never passes it. Returns the parsed body and the wall-clock latency

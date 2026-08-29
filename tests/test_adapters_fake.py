@@ -51,6 +51,10 @@ def req(**overrides) -> Request:
 
 def test_split_model():
     assert split_model("anthropic/claude-sonnet-4-6") == ("anthropic", "claude-sonnet-4-6")
+    assert split_model("openrouter/qwen/qwen3.7-plus") == (
+        "openrouter",
+        "qwen/qwen3.7-plus",
+    )
     with pytest.raises(UnsupportedProviderError):
         split_model("no-slash")
 
@@ -173,11 +177,17 @@ def test_build_adapter_routes_everything_to_the_fake_when_asked():
 
 
 def test_build_adapter_constructs_the_real_adapters():
-    from evalmine.adapters import AnthropicAdapter, GoogleAdapter, OpenAIAdapter
+    from evalmine.adapters import (
+        AnthropicAdapter,
+        GoogleAdapter,
+        OpenAIAdapter,
+        OpenRouterAdapter,
+    )
 
     assert isinstance(build_adapter("anthropic"), AnthropicAdapter)
     assert isinstance(build_adapter("openai"), OpenAIAdapter)
     assert isinstance(build_adapter("google"), GoogleAdapter)
+    assert isinstance(build_adapter("openrouter"), OpenRouterAdapter)
 
 
 def test_build_adapter_rejects_an_unknown_provider():

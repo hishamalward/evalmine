@@ -1,7 +1,7 @@
 """Adapter registry.
 
 ``--fake`` routes every model string to the fake adapter regardless of prefix
-(spec S4); otherwise the provider prefix selects one of the three real HTTP
+(spec S4); otherwise the provider prefix selects one of the four real HTTP
 adapters, each reading its key from the environment on construction.
 """
 
@@ -20,13 +20,15 @@ from .base import (
 from .fake import FakeAdapter, FakeFailure
 from .google import GoogleAdapter
 from .openai import OpenAIAdapter
+from .openrouter import OpenRouterAdapter
 
-REAL_PROVIDERS = ("anthropic", "openai", "google")
+REAL_PROVIDERS = ("anthropic", "openai", "google", "openrouter")
 
 _REAL_ADAPTERS: dict[str, type] = {
     "anthropic": AnthropicAdapter,
     "openai": OpenAIAdapter,
     "google": GoogleAdapter,
+    "openrouter": OpenRouterAdapter,
 }
 
 __all__ = [
@@ -37,6 +39,7 @@ __all__ = [
     "FakeFailure",
     "GoogleAdapter",
     "OpenAIAdapter",
+    "OpenRouterAdapter",
     "REAL_PROVIDERS",
     "Request",
     "Response",

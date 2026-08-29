@@ -37,7 +37,7 @@ checkout. Nothing above contacted a provider or spent a cent.
 Every frame of that is a real run. Re-record it with `vhs docs/demo.tape`
 ([vhs](https://github.com/charmbracelet/vhs), `brew install vhs`).
 
-**Status.** v0.1.0, pre-release. The core, the three provider adapters, execution
+**Status.** v0.1.0, pre-release. The core, the four provider adapters, execution
 checks and the MCP surface are built and tested; the price table is verified against
 each provider's public pricing page on its pinned date. The version-2 experiment
 contract, dry-run planner, and isolated workspace/evidence substrate are implemented;
@@ -93,11 +93,18 @@ evalmine run examples/everyday-eight.yaml \
 ```bash
 export ANTHROPIC_API_KEY=...
 export GOOGLE_API_KEY=...
+export OPENROUTER_API_KEY=...
 
 evalmine run examples/everyday-eight.yaml \
   --models anthropic/claude-haiku-4-5,google/gemini-2.5-flash \
   --max-cost 0.50
 ```
+
+OpenRouter uses its own adapter and credential rather than masquerading as OpenAI.
+Catalog slugs keep their nested provider path: for example,
+`openrouter/qwen/qwen3.7-plus` selects the OpenRouter adapter and sends
+`qwen/qwen3.7-plus` to its API. Schema requests require a route that supports native
+structured outputs.
 
 A pre-flight estimate runs before the first live call. If it exceeds `--max-cost`
 the run is refused (exit 4) and nothing is spent. Without a cap anywhere, the CLI
@@ -633,7 +640,7 @@ evalmine exists for three narrower reasons.
   pre-filled by the report and written by a human, and it lives in your repo next to
   the code the decision was about.
 - **The surface is small enough to audit directly.** Roughly 10,000 lines of Python including
-  four adapters, the reports and the execution checks. No LLM framework, no provider SDKs — three
+  five adapters, the reports and the execution checks. No LLM framework, no provider SDKs — four
   hand-written POSTs to documented JSON endpoints. That cost is real and worth
   stating: when a provider changes its API, we find out by breaking, not by
   upgrading.
@@ -643,7 +650,7 @@ If those three do not matter to you, the honest recommendation is promptfoo.
 ## Not yet
 
 Still out of scope: RAG or retrieval eval; fine-tuning; a hosted multi-user UI; more
-than three direct-API providers; and rubric auto-generation. Exact installed-plugin
+than four direct-API providers; and rubric auto-generation. Exact installed-plugin
 allowlisting remains unavailable for Codex and for Claude marketplace names, so those
 combinations fail preflight. The real music-analytics commands and database still need
 an operator-authorized domain run; the shipped offline fixture proves the generic DAG,
