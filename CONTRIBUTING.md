@@ -29,6 +29,17 @@ latency and text all derive from the request's content hash. If you find yoursel
 wanting to hit a real provider in a test, that is a sign the thing you are testing
 belongs in a pure function in `metrics.py` instead.
 
+The producer-side TypeScript harness kit has its own zero-network suite:
+
+```bash
+npm ci --prefix packages/harness-kit
+npm test --prefix packages/harness-kit
+```
+
+Its runtime dependency list must remain empty. Synthetic bundle fixtures are round-tripped
+through the Python importer in CI so the TypeScript profile cannot silently drift from the
+authoritative import schema.
+
 CI runs {ubuntu, macos, windows} x {3.10, 3.13} — six legs, every one running every
 test including the MCP ones. Windows is in the matrix for real reasons (path handling,
 the pointer file that stands in for a symlink), so check the Windows leg before

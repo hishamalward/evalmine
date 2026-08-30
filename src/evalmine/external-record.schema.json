@@ -8,6 +8,7 @@
     "lane": { "type": "string", "minLength": 1 },
     "item_id": { "type": "string", "minLength": 1 },
     "account_id": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 120 },
     "prompt": { "type": "string", "minLength": 1 },
     "output": {},
     "fields": { "type": "object", "minProperties": 1 },

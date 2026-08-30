@@ -2118,6 +2118,20 @@ reconciliation ratios when denominators are positive, and never adds or averages
 Missing receipts remain unavailable. Costs are hidden from the labeling deck and shown in
 the identity-revealing decision report.
 
+Producer records may include a `correlation_id` of at most 120 characters. It is an opaque,
+stable join key for matching the completed artifact to generation logs and independent cost
+receipts; import preserves it but never uses it to launch, price, or judge anything.
+
+The `@evalmine/harness-kit` TypeScript package is a producer-side companion to this import
+boundary. It has no runtime dependencies and no provider, judge,
+ledger, or reporting capability. It accepts ordered layers of already completed records,
+applies last-layer-wins only to the full `(lane, item_id, account_id, condition.id)` key,
+checks the same comparison grid before export, and writes a new hash-pinned bundle containing
+canonical JSONL plus `evalmine-import.yaml`. Its stricter producer profile requires an
+explicit ranking style and correlation id. Semantic facts hidden inside opaque caller text
+(notably whether `item_id` embeds a treatment or whether prompt prose leaks an arm) remain
+declared producer responsibilities; the kit must not pretend they are mechanically provable.
+
 
 ## 13H. Runner cost, plugin, and external-write controls
 

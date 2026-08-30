@@ -366,6 +366,7 @@ receipts:
   "lane": "summary",
   "item_id": "invoice-001",
   "account_id": "account-redacted-a",
+  "correlation_id": "invoice:001:model-a:741ffb9d51a7626498aa",
   "prompt": "Summarize the invoice.",
   "condition": {
     "id": "model-a-prompt-v1-wide",
@@ -389,6 +390,13 @@ side and records both the best outcome and wrong-output flags per field. Estimat
 ledger, and dashboard-observed costs are displayed separately with reconciliation ratios;
 they are never blended into one number. See the sanitized
 [external-artifacts example](examples/external-artifacts/evalmine-import.yaml).
+
+TypeScript generation harnesses can use
+[`@evalmine/harness-kit`](packages/harness-kit) to construct this bundle rather than
+reimplementing the contract. The zero-runtime-dependency package accepts completed
+records only, applies ordered last-run-wins overlays, rejects invalid comparison grids,
+creates bounded correlation ids, and writes the required manifest plus hash-pinned JSONL.
+It never calls a model, judges an output, queries spend, or builds an EvalMine report.
 
 ### Run a backoff workflow DAG
 

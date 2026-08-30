@@ -1,0 +1,37 @@
+{
+  "name": "@evalmine/harness-kit",
+  "version": "0.1.0",
+  "description": "Build and preflight completed EvalMine external-artifact bundles without generating or judging.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/harness-kit.test.js",
+    "generate-fixture": "npm run build --silent && node dist/test/generate-fixture.js",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hishamalward/evalmine.git",
+    "directory": "packages/harness-kit"
+  }
+}

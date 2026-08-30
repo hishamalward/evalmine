@@ -180,6 +180,26 @@ def test_external_import_cli_reports_zero_provider_calls(tmp_path: Path, capsys)
     assert "pinned external artifacts" in capsys.readouterr().out
 
 
+def test_external_import_preserves_optional_producer_correlation_id(tmp_path: Path):
+    bundle = _bundle(tmp_path)
+    artifact = bundle / "completed.jsonl"
+    rows = [json.loads(line) for line in artifact.read_text(encoding="utf-8").splitlines()]
+    rows[0]["correlation_id"] = "synthetic:summary:item-1:condition-1"
+    raw = b"".join((json.dumps(row, sort_keys=True) + "\n").encode("utf-8") for row in rows)
+    artifact.write_bytes(raw)
+    manifest_path = bundle / "evalmine-import.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    result = import_external_artifacts(bundle, tmp_path / "correlated-evidence")
+    normalized = [
+        json.loads(line)
+        for line in (result.root / "artifacts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert normalized[0]["correlation_id"] == "synthetic:summary:item-1:condition-1"
+
+
 def test_sanitized_external_example_imports_without_generation(tmp_path: Path):
     result = import_external_artifacts(
         REPO_ROOT / "examples" / "external-artifacts", tmp_path / "example-evidence"

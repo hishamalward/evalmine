@@ -10,6 +10,39 @@ permissions:
   contents: read
 
 jobs:
+  harness-kit:
+    name: TypeScript harness kit / node20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/harness-kit/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install harness kit
+        run: npm ci --prefix packages/harness-kit
+
+      - name: Test harness kit
+        run: npm test --prefix packages/harness-kit
+
+      - name: Install EvalMine
+        run: python -m pip install -e ".[dev]"
+
+      - name: Round-trip a synthetic TypeScript bundle through EvalMine
+        shell: bash
+        run: |
+          npm run generate-fixture --prefix packages/harness-kit -- "${RUNNER_TEMP}/harness-bundle"
+          python -m evalmine.cli experiment import "${RUNNER_TEMP}/harness-bundle" \
+            --out "${RUNNER_TEMP}/harness-evidence"
+          python -m evalmine.cli experiment verify "${RUNNER_TEMP}/harness-evidence"
+
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
