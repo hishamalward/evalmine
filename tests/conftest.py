@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SUITE = REPO_ROOT / "examples" / "everyday-eight.yaml"
 SPEC = REPO_ROOT / "docs" / "spec.md"
 PRICES_DIR = REPO_ROOT / "prices"
+
+
+def _github_command_value(value: object) -> str:
+    """Escape one value for GitHub Actions' workflow-command protocol."""
+    return (
+        str(value)
+        .replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+    )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """Turn pytest failures into useful GitHub annotations on every CI platform."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    for report in terminalreporter.stats.get("failed", []):
+        path, line, test_name = report.location
+        title = _github_command_value(f"pytest: {test_name}")
+        message = _github_command_value(report.longrepr)
+        terminalreporter.write_line(
+            f"::error file={path},line={line + 1},title={title}::{message}"
+        )
 
 
 MINIMAL_SUITE: dict[str, Any] = {
