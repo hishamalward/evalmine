@@ -43,6 +43,10 @@ class Request:
     top_p: float | None = None
     stop: tuple[str, ...] | None = None
     schema: dict[str, Any] | None = None
+    #: Provider-specific routing controls that affect which backend serves the
+    #: request. They are part of the suite contract and cache key; adapters
+    #: that do not support routing leave this unset.
+    provider_options: dict[str, Any] | None = None
     timeout_s: int = 60
 
 
@@ -53,6 +57,9 @@ class Response:
     output_tokens: int | None
     cached_input_tokens: int = 0
     reasoning_tokens: int = 0
+    #: A metered amount returned by the provider for this exact request. When
+    #: present it is stronger cost evidence than a token-count estimate.
+    reported_cost_usd: float | None = None
     latency_ms: int = 0
     finish_reason: str = "stop"
     #: "native" - the provider enforced the schema for us; "prompted" - the

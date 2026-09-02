@@ -4,6 +4,12 @@ Producer-side helpers for completed
 [EvalMine external-artifact bundles](../../docs/spec.md#13g-completed-external-artifact-import).
 The package has no runtime dependencies and no model, judge, ledger, or report access.
 
+Until the first registry release, consumers should vendor either the immutable tarball produced
+by `npm pack ./packages/harness-kit` or a source snapshot pinned to an exact EvalMine commit.
+Keep that copy inside the consumer repository and use a workspace or repository-relative `file:`
+dependency; do not use a machine-local path into an EvalMine checkout. After publication, the
+same import works with the registry package.
+
 ```ts
 import {
   HarnessBuilder,

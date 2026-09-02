@@ -93,6 +93,8 @@ class AnswerRecord:
     output_tokens: int | None = None
     cached_input_tokens: int = 0
     reasoning_tokens: int = 0
+    provider_reported_cost_usd: float | None = None
+    cost_basis: str | None = None
     latency_ms: int | None = None
     finish_reason: str | None = None
     schema_mode: str = "prompted"
@@ -148,6 +150,8 @@ class AnswerRecord:
             "output_tokens": self.output_tokens,
             "cached_input_tokens": self.cached_input_tokens,
             "reasoning_tokens": self.reasoning_tokens,
+            "provider_reported_cost_usd": self.provider_reported_cost_usd,
+            "cost_basis": self.cost_basis,
             "cost_usd": self.cost,
             "cost_if_uncached_usd": self.cost_if_uncached,
             "finish_reason": self.finish_reason,
@@ -165,6 +169,7 @@ class CallPlan:
     prompt: str
     system: str | None
     key: str
+    provider_options: dict[str, Any] | None = None
     cached: bool = False
     check: CheckSpec | None = None
 
@@ -233,6 +238,16 @@ def make_run_id(when: datetime, suite_hash: str, models: list[str]) -> str:
 def _adapter_provider(model: str, fake: bool) -> tuple[str, str]:
     provider, model_id = split_model(model)
     return ("fake" if fake else provider), model_id
+
+
+def _provider_options(suite: Suite, model: str, fake: bool) -> dict[str, Any] | None:
+    provider, model_id = split_model(model)
+    if fake or provider != "openrouter":
+        return None
+    pinned = suite.openrouter_provider_pins.get(model_id)
+    if pinned is None:
+        return None
+    return {"order": [pinned], "allow_fallbacks": False}
 
 
 class _AdapterPool:
@@ -344,6 +359,7 @@ def run_suite(
                             prompt=case.prompt,
                             system=case.system,
                             key="",
+                            provider_options=_provider_options(suite, model, fake),
                             check=case.check,
                         )
                     )
@@ -358,7 +374,10 @@ def run_suite(
             model=plan.model,
             system=plan.system,
             prompt=plan.prompt,
-            params=plan.task.params.as_cache_params(),
+            params={
+                **plan.task.params.as_cache_params(),
+                "provider_options": plan.provider_options,
+            },
             schema=plan.task.schema,
             schema_mode=adapter.schema_mode_for(plan.task.schema),
             adapter_version=adapter.version,
@@ -441,6 +460,7 @@ def run_suite(
     if not aborted:
         judge_provider, _ = _adapter_provider(judge_model, fake)
         judge_adapter = pool.get(judge_provider)
+        judge_provider_options = _provider_options(suite, judge_model, fake)
 
         def _judge_call(prompt: str, system: str | None, bypass_cache: bool = False) -> JudgeCall:
             nonlocal spend
@@ -455,6 +475,7 @@ def run_suite(
                 row=judge_row,
                 bypass_cache=bypass_cache or no_cache,
                 retry_sleep=retry_sleep,
+                provider_options=judge_provider_options,
             )
             if not call.cached:
                 _charge(call.cost)
@@ -572,14 +593,25 @@ def _run_one_answer(
         record.output_tokens = entry.get("output_tokens")
         record.cached_input_tokens = entry.get("cached_input_tokens") or 0
         record.reasoning_tokens = entry.get("reasoning_tokens") or 0
+        record.provider_reported_cost_usd = entry.get("reported_cost_usd")
+        record.cost_basis = (
+            "provider_reported" if record.provider_reported_cost_usd is not None else "price_table"
+        )
         record.latency_ms = entry.get("latency_ms")
         record.finish_reason = entry.get("finish_reason")
         record.schema_mode = entry.get("schema_mode", record.schema_mode)
         # A cache hit costs nothing in this run; what it would have cost is
         # still reported, so a fully cached rerun does not read as free work.
         record.cost = 0.0
-        record.cost_if_uncached = call_cost(
-            row, record.input_tokens, record.output_tokens, record.cached_input_tokens
+        record.cost_if_uncached = (
+            record.provider_reported_cost_usd
+            if record.provider_reported_cost_usd is not None
+            else call_cost(
+                row,
+                record.input_tokens,
+                record.output_tokens,
+                record.cached_input_tokens,
+            )
         )
     else:
         _, model_id = split_model(plan.model)
@@ -592,6 +624,7 @@ def _run_one_answer(
             top_p=plan.task.params.top_p,
             stop=plan.task.params.stop,
             schema=plan.task.schema,
+            provider_options=plan.provider_options,
             timeout_s=plan.task.params.timeout_s,
         )
         try:
@@ -612,11 +645,20 @@ def _run_one_answer(
         record.output_tokens = response.output_tokens
         record.cached_input_tokens = response.cached_input_tokens
         record.reasoning_tokens = response.reasoning_tokens
+        record.provider_reported_cost_usd = response.reported_cost_usd
         record.latency_ms = response.latency_ms
         record.finish_reason = response.finish_reason
         record.schema_mode = response.schema_mode
-        record.cost = call_cost(
+        estimated_cost = call_cost(
             row, response.input_tokens, response.output_tokens, response.cached_input_tokens
+        )
+        record.cost = (
+            response.reported_cost_usd
+            if response.reported_cost_usd is not None
+            else estimated_cost
+        )
+        record.cost_basis = (
+            "provider_reported" if response.reported_cost_usd is not None else "price_table"
         )
         record.cost_if_uncached = record.cost
         cache.put(
@@ -629,6 +671,7 @@ def _run_one_answer(
                 "output_tokens": response.output_tokens,
                 "cached_input_tokens": response.cached_input_tokens,
                 "reasoning_tokens": response.reasoning_tokens,
+                "reported_cost_usd": response.reported_cost_usd,
                 "latency_ms": response.latency_ms,
                 "finish_reason": response.finish_reason,
                 "schema_mode": response.schema_mode,
@@ -672,6 +715,7 @@ def _run_one_judge_call(
     row: PriceRow,
     bypass_cache: bool,
     retry_sleep: Callable[[float], None] = time.sleep,
+    provider_options: dict[str, Any] | None = None,
 ) -> JudgeCall:
     params = {
         "temperature": config.temperature,
@@ -679,6 +723,7 @@ def _run_one_judge_call(
         "top_p": None,
         "stop": None,
         "seed": None,
+        "provider_options": provider_options,
     }
     from .judge import JUDGE_SCHEMA
 
@@ -698,14 +743,19 @@ def _run_one_judge_call(
     if not bypass_cache:
         entry = cache.get(provider, key)
         if entry is not None:
+            reported_cost = entry.get("reported_cost_usd")
             return JudgeCall(
                 text=entry.get("text", ""),
                 cost=0.0,
-                cost_if_uncached=call_cost(
-                    row,
-                    entry.get("input_tokens"),
-                    entry.get("output_tokens"),
-                    entry.get("cached_input_tokens") or 0,
+                cost_if_uncached=(
+                    reported_cost
+                    if reported_cost is not None
+                    else call_cost(
+                        row,
+                        entry.get("input_tokens"),
+                        entry.get("output_tokens"),
+                        entry.get("cached_input_tokens") or 0,
+                    )
                 ),
                 cached=True,
                 latency_ms=entry.get("latency_ms") or 0,
@@ -721,6 +771,7 @@ def _run_one_judge_call(
         max_tokens=config.max_tokens,
         temperature=config.temperature,
         schema=JUDGE_SCHEMA,
+        provider_options=provider_options,
     )
     try:
         response = call_with_retries(adapter, req, sleep=retry_sleep)
@@ -739,6 +790,7 @@ def _run_one_judge_call(
             "output_tokens": response.output_tokens,
             "cached_input_tokens": response.cached_input_tokens,
             "reasoning_tokens": response.reasoning_tokens,
+            "reported_cost_usd": response.reported_cost_usd,
             "latency_ms": response.latency_ms,
             "finish_reason": response.finish_reason,
             "schema_mode": response.schema_mode,
@@ -746,8 +798,15 @@ def _run_one_judge_call(
             "tool_version": __version__,
         },
     )
-    live_cost = call_cost(
-        row, response.input_tokens, response.output_tokens, response.cached_input_tokens
+    live_cost = (
+        response.reported_cost_usd
+        if response.reported_cost_usd is not None
+        else call_cost(
+            row,
+            response.input_tokens,
+            response.output_tokens,
+            response.cached_input_tokens,
+        )
     )
     return JudgeCall(
         text=response.text,

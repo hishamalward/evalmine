@@ -14,8 +14,9 @@ import yaml
 from conftest import EXAMPLE_SUITE, PRICES_DIR
 
 from evalmine.adapters import FakeAdapter, FakeFailure, Request, Response
-from evalmine.core import CostRefused, RunError, UsageError, run_suite
+from evalmine.core import CostRefused, RunError, UsageError, _provider_options, run_suite
 from evalmine.prices import UnknownModelError
+from evalmine.suite import load_suite
 
 MODELS = ["anthropic/claude-haiku-4-5", "google/gemini-2.5-flash"]
 WHEN = datetime(2026, 8, 23, 9, 14, 2, tzinfo=timezone.utc)
@@ -80,6 +81,20 @@ def test_baseline_defaults_to_the_first_model(tmp_path):
     result = run(tmp_path)
     assert result.report["baseline"] == MODELS[0]
     assert result.report["candidates"] == [MODELS[1]]
+
+
+def test_suite_openrouter_pin_becomes_strict_request_routing(
+    minimal_suite, write_suite
+):
+    minimal_suite["openrouter"] = {
+        "provider_pins": {"qwen/qwen3.7-plus": "deepinfra/turbo"}
+    }
+    suite = load_suite(write_suite(minimal_suite))
+    assert _provider_options(suite, "openrouter/qwen/qwen3.7-plus", fake=False) == {
+        "order": ["deepinfra/turbo"],
+        "allow_fallbacks": False,
+    }
+    assert _provider_options(suite, "openrouter/qwen/qwen3.7-plus", fake=True) is None
 
 
 # --------------------------------------------------------------------------
@@ -159,6 +174,46 @@ class ExpensiveAdapter(FakeAdapter):
             finish_reason=response.finish_reason,
             schema_mode=response.schema_mode,
         )
+
+
+class ProviderBilledAdapter(FakeAdapter):
+    """Returns an exact provider charge that differs from table arithmetic."""
+
+    def complete(self, req: Request) -> Response:
+        response = super().complete(req)
+        return Response(
+            text=response.text,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cached_input_tokens=response.cached_input_tokens,
+            reasoning_tokens=response.reasoning_tokens,
+            reported_cost_usd=0.01,
+            latency_ms=response.latency_ms,
+            finish_reason=response.finish_reason,
+            schema_mode=response.schema_mode,
+        )
+
+
+def test_provider_reported_cost_is_preferred_and_preserved_in_cache(tmp_path):
+    first = run(
+        tmp_path,
+        max_cost=2.0,
+        adapter_factory=lambda p, f: ProviderBilledAdapter(),
+    )
+    answer_lines = (first.report_path.parent / "answers.jsonl").read_text().splitlines()
+    answers = [json.loads(line) for line in answer_lines]
+    assert answers
+    assert all(row["provider_reported_cost_usd"] == 0.01 for row in answers)
+    assert all(row["cost_basis"] == "provider_reported" for row in answers)
+    assert first.report["totals"]["cost_answers_usd"] == pytest.approx(0.4)
+
+    second = run(
+        tmp_path,
+        max_cost=2.0,
+        adapter_factory=lambda p, f: ProviderBilledAdapter(),
+    )
+    assert second.report["totals"]["cost_answers_usd"] == 0.0
+    assert second.report["totals"]["cost_answers_if_uncached_usd"] == pytest.approx(0.4)
 
 
 def test_the_live_ceiling_aborts_mid_run_and_writes_a_partial_report(tmp_path):

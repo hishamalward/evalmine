@@ -12,7 +12,8 @@ notes: >
   Prices per million tokens. API list-price equivalents are estimates, not
   subscription charges. There is no fallback price for an unknown model.
   DeepSeek rows use the active off-peak rate as the numeric base and carry the
-  complete peak schedule in row-level notes.
+  complete peak schedule in row-level notes. Their provider-owned source values
+  intentionally supersede earlier planning estimates supplied before verification.
 
 models:
   - model: anthropic/claude-sonnet-4-6
@@ -119,7 +120,8 @@ models:
     notes: >
       Numeric fields are off-peak. Monday-Friday peak windows are 01:00-04:00
       and 06:00-10:00 UTC, when cache-hit input is $0.014/M, cache-miss input
-      is $0.44/M, and output is $1.32/M. Schedule effective 2026-08-16.
+      is $0.44/M, and output is $1.32/M. Schedule effective 2026-08-16. These
+      source-verified rates supersede earlier planning estimates.
 
   - model: deepseek/deepseek-v4-pro
     input_per_mtok: 0.66
@@ -131,7 +133,8 @@ models:
     notes: >
       Numeric fields are off-peak. Monday-Friday peak windows are 01:00-04:00
       and 06:00-10:00 UTC, when cache-hit input is $0.044/M, cache-miss input
-      is $1.32/M, and output is $3.96/M. Schedule effective 2026-08-16.
+      is $1.32/M, and output is $3.96/M. Schedule effective 2026-08-16. These
+      source-verified rates supersede earlier planning estimates.
 
   - model: openrouter/qwen/qwen3.7-plus
     input_per_mtok: 0.32

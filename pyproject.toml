@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "evalmine"
 version = "0.1.0"
-description = "A public, Python eval harness that scores a model change against your own tasks - pairwise LLM-judge win-rates calibrated to your labels, schema-pass rate, latency and cost - and writes a versioned report."
+description = "A public evaluation evidence system for direct model suites, isolated agent episodes, and completed external artifacts."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

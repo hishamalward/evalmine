@@ -43,6 +43,35 @@ def test_unknown_top_level_key_is_an_error(minimal_suite, write_suite):
     assert "rubrik" in str(exc.value)
 
 
+def test_nested_openrouter_model_and_per_model_provider_pin_load(minimal_suite, write_suite):
+    minimal_suite["judge"]["model"] = "openrouter/qwen/qwen3.7-plus"
+    minimal_suite["openrouter"] = {
+        "provider_pins": {"qwen/qwen3.7-plus": "deepinfra/turbo"}
+    }
+    suite = load_suite(write_suite(minimal_suite))
+    assert suite.judge.model == "openrouter/qwen/qwen3.7-plus"
+    assert suite.openrouter_provider_pins == {
+        "qwen/qwen3.7-plus": "deepinfra/turbo"
+    }
+
+
+@pytest.mark.parametrize(
+    "pins",
+    [
+        {},
+        {"qwen/qwen3.7-plus": ""},
+        {"qwen/qwen3.7-plus": "DeepInfra"},
+        {"not-a-catalog-model": "deepinfra"},
+    ],
+)
+def test_invalid_openrouter_provider_pins_fail_closed(
+    minimal_suite, write_suite, pins
+):
+    minimal_suite["openrouter"] = {"provider_pins": pins}
+    with pytest.raises(SuiteError):
+        load_suite(write_suite(minimal_suite))
+
+
 def test_unknown_task_key_is_an_error(minimal_suite, write_suite):
     minimal_suite["tasks"][0]["promptt"] = "typo"
     with pytest.raises(SuiteError):

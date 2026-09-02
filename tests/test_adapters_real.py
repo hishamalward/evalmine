@@ -479,6 +479,7 @@ def test_openrouter_success_with_usage_and_attribution():
     assert resp.output_tokens == 7
     assert resp.cached_input_tokens == 3
     assert resp.reasoning_tokens == 4
+    assert resp.reported_cost_usd == pytest.approx(0.000012)
     assert resp.finish_reason == "stop"
 
 
@@ -502,6 +503,24 @@ def test_openrouter_schema_request_requires_native_parameter_support():
     assert adapter.schema_mode_for(None) == "prompted"
 
 
+def test_openrouter_applies_a_pinned_backend_without_fallbacks():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["provider"] == {
+            "order": ["deepinfra/turbo"],
+            "allow_fallbacks": False,
+        }
+        return json_response(200, OPENROUTER_SUCCESS)
+
+    adapter = OpenRouterAdapter(api_key="sk-or-test", transport=transport(handler))
+    adapter.complete(
+        req(
+            model_id="qwen/qwen3.7-plus",
+            provider_options={"order": ["deepinfra/turbo"], "allow_fallbacks": False},
+        )
+    )
+
+
 def test_openrouter_missing_usage_is_none_not_zero():
     body = {
         "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]
@@ -514,6 +533,7 @@ def test_openrouter_missing_usage_is_none_not_zero():
     assert resp.output_tokens is None
     assert resp.cached_input_tokens == 0
     assert resp.reasoning_tokens == 0
+    assert resp.reported_cost_usd is None
 
 
 @pytest.mark.parametrize("status,retryable", [(401, False), (429, True), (502, True)])

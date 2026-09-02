@@ -22,7 +22,7 @@ APP_TITLE = "evalmine"
 
 class OpenRouterAdapter:
     name = "openrouter"
-    version = 1
+    version = 2
 
     def __init__(
         self,
@@ -77,7 +77,11 @@ class OpenRouterAdapter:
             }
             # OpenRouter can route one model slug across several upstreams.
             # Refuse a route that would drop the requested schema parameter.
-            body["provider"] = {"require_parameters": True}
+        if req.provider_options is not None or req.schema is not None:
+            provider = dict(req.provider_options or {})
+            if req.schema is not None:
+                provider["require_parameters"] = True
+            body["provider"] = provider
 
         headers = {
             "authorization": f"Bearer {self.api_key}",
@@ -99,6 +103,11 @@ class OpenRouterAdapter:
         completion_details = (
             completion_details if isinstance(completion_details, dict) else {}
         )
+        reported_cost = usage.get("cost")
+        if not isinstance(reported_cost, (int, float)) or isinstance(reported_cost, bool):
+            reported_cost = None
+        elif reported_cost < 0:
+            reported_cost = None
 
         return Response(
             text=text,
@@ -107,6 +116,7 @@ class OpenRouterAdapter:
             output_tokens=usage.get("completion_tokens"),
             cached_input_tokens=int(prompt_details.get("cached_tokens") or 0),
             reasoning_tokens=int(completion_details.get("reasoning_tokens") or 0),
+            reported_cost_usd=(float(reported_cost) if reported_cost is not None else None),
             latency_ms=latency_ms,
             finish_reason=finish_reason,
             schema_mode=self.schema_mode_for(req.schema),

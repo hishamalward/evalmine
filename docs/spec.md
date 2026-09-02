@@ -1,17 +1,18 @@
-# evalmine — specification (v0.1.0, pre-code)
+# evalmine — specification (v0.1.0, implemented pre-release)
 
-**Status:** approved, with the three open questions in §14 ruled on. This document
-is the contract the code is written against.
+**Status:** implemented and tested. This is the current product contract; historical
+implementation plans under `docs/plans/` are supporting records, not competing specs.
 
-**Date:** 2026-08-23 (rulings O-1, O-2, O-3 and the name applied the same day)
+**Date:** 2026-08-30 (original rulings retained; three-lane product model and completed
+control plane reconciled with the implementation)
 
 ---
 
 ## 1. What this is
 
-> A public, Python eval harness that scores a model change against your own
-> tasks — pairwise LLM-judge win-rates calibrated to your labels, schema-pass
-> rate, latency and cost — and writes a versioned report.
+> A public evaluation evidence system for direct model suites, isolated agent
+> episodes, and completed external artifacts, with calibrated judging and
+> reproducible decision reports.
 
 Every model release ships with leaderboard numbers that have never predicted how
 the model behaves on the forty-odd tasks you actually run. This tool answers one
@@ -19,6 +20,14 @@ question about a model change: **did it help me, hurt me, or cost me more for th
 same result?** It answers it on your tasks, with your preferences as the
 yardstick, and it refuses to give you a headline number when it cannot show that
 its judge agrees with you.
+
+EvalMine has three evidence-input lanes. The **suite lane** invokes direct model APIs for
+narrow prompt/model comparisons. The **agent lane** runs controlled multi-turn episodes in
+isolated workspaces. The **external-artifact lane** invokes nothing: an application-owned
+producer generates outputs, optionally uses `@evalmine/harness-kit` to package completed
+records, and EvalMine imports them. All lanes converge on verified evidence, blind pairwise
+or N-way review, calibrated judging, and a decision report. The workflow DAG is controlled
+orchestration for evidence jobs, not a fourth evaluation meaning.
 
 ### 1.1 Name
 
@@ -83,19 +92,16 @@ harness's tasks, not Hisham's real tasks, and not anyone's production workload.
 
 ### 1.3 Scope
 
-**In (v0.1.0).** A CLI that runs a YAML suite across two or more model strings;
-schema-pass rate, latency, cost, and pairwise judge win-rate against a baseline
-with position swap and ties; judge calibration against human labels with a floor
-below which win-rates are not printed as a headline; disk caching by content
-hash; Markdown + JSON reports with a "what changed" section; four provider
-adapters (Anthropic, OpenAI, Google, OpenRouter) behind one small interface, plus a fake
-adapter; an MCP server exposing exactly three tools.
+**In (v0.1.0).** The three evidence lanes above; schema, execution, latency, and cost
+evidence; pairwise and N-way ranking; full-condition blinding; partial human calibration;
+provider and subscription judge runners; content-addressed caching; external cost receipts;
+Markdown, JSON, and self-contained HTML reports; four direct-provider adapters plus the
+fake adapter; a controlled workflow DAG; and the 16-tool MCP control plane in §11/§13I.
 
-**Out of the v1 suite engine — and the README says so.** RAG or retrieval eval;
-agent or multi-turn trajectories; fine-tuning; a web UI; anything hosted; more
-than four direct-API providers; rubric auto-generation; MCP tools beyond the
-three in §11. The separately versioned v2 experiment substrate in §13A adds
-agent episodes without changing the v1 suite or report contract.
+**Out.** RAG or retrieval evaluation, fine-tuning, a hosted multi-user UI, more than four
+direct-API providers, rubric auto-generation, arbitrary direct-API shell execution in the
+workflow lane, and product database access. External producers retain generation and domain
+access; EvalMine receives only their completed contract records.
 
 ### 1.4 Blast radius
 
@@ -129,7 +135,7 @@ the provider CLI's cached local authentication; Phase 3A refuses agent arms that
 | **pair** | (task, case, baseline model, candidate model) — the unit that gets judged |
 | **pass** | one judge call on a pair in one presentation order. Every pair gets two |
 | **run** | one execution of one suite over one model list, producing one report |
-| **model string** | `provider/model-id`, e.g. `anthropic/claude-sonnet-4-6`. The prefix selects the adapter; the whole string is the price-table key |
+| **model string** | `provider/model-id`, e.g. `anthropic/claude-sonnet-4-6`; nested catalog slugs such as `openrouter/qwen/qwen3.7-plus` are valid. The first prefix selects the adapter; the whole string is the price-table key |
 
 ---
 
@@ -146,7 +152,7 @@ evalmine/
   pyproject.toml
   docs/
     spec.md              this file
-    learning/how-it-works.md    (step 4 of the plan; not in v0.1.0 scope here)
+    learning/how-it-works.md    current product and implementation tour
   examples/
     everyday-eight.yaml  §5.4
   prices/
@@ -161,7 +167,7 @@ evalmine/
     workspace.py         prepare, verify, and discard isolated v2 workspaces
     adapters/
       base.py            the Protocol, Request, Response, errors
-      anthropic.py  openai.py  google.py  fake.py
+      anthropic.py  openai.py  google.py  openrouter.py  fake.py
     cache.py             §6.5
     judge.py             §7.1–7.2
     metrics.py           §6, §7 — pure functions, no I/O
@@ -169,6 +175,7 @@ evalmine/
     report.py            §9
     mcp_server.py        §11  (optional extra, Python >= 3.10)
   tests/
+  packages/harness-kit/  zero-runtime-dependency TypeScript producer boundary
 ```
 
 ---
@@ -1335,6 +1342,14 @@ and uses `response_format.type: json_schema` with strict mode. Schema requests a
 `provider.require_parameters: true`, so routing fails rather than silently selecting an
 upstream that drops structured-output enforcement. Returned cached and reasoning-token
 counts use OpenRouter's detailed usage fields; completion tokens already include reasoning.
+`usage.cost` is preserved as `reported_cost_usd` and is the live call's accounting basis
+when present. The pinned table remains the preflight basis because cost is unavailable until
+after a call completes.
+
+Suites may declare `openrouter.provider_pins.<catalog-model-slug>: <backend-slug>`. A pin
+sends `provider.order: [backend]` and `provider.allow_fallbacks: false`, and the resulting
+routing object is included in answer and judge cache keys. This makes a backend choice part
+of experimental identity instead of an unrecorded router preference.
 
 **Keys** come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or
 `OPENROUTER_API_KEY` only. Nothing else is read. `.env.example` lists the names. Keys are
@@ -1348,12 +1363,15 @@ One module, `src/evalmine/mcp_server.py`, stdio transport, official Python MCP
 SDK, console script `evalmine-mcp`. It calls the same `core.py` functions the CLI
 calls and contains no evaluation logic of its own.
 
-**Why it exists:** so an agent can run your evals *mid-task* — "before you swap
-the model in this file, run the suite and tell me the win-rate" — instead of a
-person reading a report afterwards. **Why three tools and not the CLI:** an
-agent-facing surface should be the smallest set of verbs that supports the
-decision, and every extra tool is another way to spend money you did not
-authorise.
+**Why it exists:** so an agent can create and inspect evaluation evidence *mid-task* instead
+of a person reconstructing it afterwards. The surface exposes explicit lifecycle verbs
+rather than arbitrary CLI execution. Each mutating, command-running, or provider-calling
+operation has an independent gate; read-only operations return summaries and paths rather
+than raw outputs.
+
+Sections 11.1–11.5 define the original three suite operations. Section 13I defines the
+additive experiment, external-import, and workflow groups. Together the server registers
+16 tools. The suite group remains backwards compatible.
 
 ### 11.1 `run_suite`
 
@@ -1434,6 +1452,7 @@ Reads from disk only. Zero spend, always.
         "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+        "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}",
         "EVALMINE_MCP_MAX_COST": "1.00",
         "EVALMINE_MCP_MAX_COST_CEILING": "5.00",
         "EVALMINE_MCP_SUITE_ROOT": "${PWD}"
@@ -1540,9 +1559,8 @@ identical run is a 100% cache hit that produces an identical `report.json` modul
 changed" section that names the modified task.
 
 **CI:** green on {ubuntu, macos, windows} × {3.10, 3.13}, every leg running every
-test including the MCP ones. Three MCP tool tests against the fake adapter,
-including one asserting a structured refusal when `max_cost` is below the
-estimate and that no adapter call occurred.
+test including the MCP suite, experiment, import, and workflow operations. Cost-gate
+tests assert structured refusal before any adapter call.
 
 **Repo hygiene:** MIT licence; README whose first 200 words are problem →
 approach → result; a 30-second demo GIF; `CONTRIBUTING.md`; `.env.example`; a
@@ -1559,7 +1577,8 @@ that exists, this is a tool that has never been used.
 ## 13A. Version-2 experiment preparation
 
 V2 is additive. It does not change v1 suite loading, metrics, provider adapters,
-reports, exit codes, or MCP tools. Its unit is one **arm running one repeat of one
+reports, exit codes, or the original suite MCP tool contracts. It adds lifecycle tools
+under the same gated MCP control plane. Its unit is one **arm running one repeat of one
 multi-turn episode in one isolated workspace**.
 
 ### 13A.1 Planning inputs
@@ -2209,15 +2228,12 @@ retraction is evidence too. See §6.6.
 
 ---
 
-## 15. Build order (after approval)
+## 15. Implementation and release gate
 
-1. `suite.py`, `metrics.py`, `prices.py`, `cache.py`, `adapters/fake.py` + every
-   unit test in §13. No network, no keys, no spend.
-2. `core.py`, `report.py`, `cli.py` + the integration test.
-3. `adapters/{anthropic,openai,google}.py`, then the example suite run once
-   against each to prove the plumbing — nothing more.
-4. `mcp_server.py` + its three tests.
-5. CI, README, GIF, `CONTRIBUTING.md`, `DECISIONS.md` header.
-6. The real run on the real suite; the first decision-log entry, written with a
-   human.
-7. `docs/learning/how-it-works.md`, then `v0.1.0`.
+The suite engine, provider adapters, experiment substrate, external import, workflow DAG,
+reports, harness kit, and MCP control plane are implemented. Unit and synthetic round-trip
+tests make no provider calls. The remaining pre-release proof is operational rather than a
+code phase: run a representative real suite or imported artifact set with human labels,
+pass its configured calibration gate, inspect the evidence, and write the first human-owned
+`DECISIONS.md` entry. Until then the software is implemented but the product claim remains
+pre-release.

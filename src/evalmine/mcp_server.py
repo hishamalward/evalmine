@@ -1,11 +1,11 @@
-"""The MCP surface: three tools over stdio. Spec: docs/spec.md S11.
+"""The MCP control plane over stdio. Spec: docs/spec.md S11 and S13I.
 
 Calls the same ``core.py`` functions the CLI calls and contains no evaluation
 logic of its own. What this module adds beyond a thin wrapper is the S11.4
 guard rail: an agent supplied these inputs instead of a person typing them,
 so the cost cap is lower by default, a request above the ceiling is refused
 outright rather than clamped, and ``suite_path`` may not escape the
-configured root. None of these three tools ever returns a raw provider
+configured root. No tool returns a raw provider
 response - only the summary and the paths on disk (S11.1).
 
 ``mcp`` is an optional extra (``pip install evalmine[mcp]``); importing this
@@ -180,7 +180,7 @@ def _summary_from_report(report: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# the three tools (S11.1-S11.3)
+# suite operations (S11.1-S11.3)
 # --------------------------------------------------------------------------
 
 

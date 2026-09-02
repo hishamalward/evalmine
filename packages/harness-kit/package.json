@@ -16,8 +16,10 @@
   },
   "files": [
     "dist/src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/harness-kit.test.js",
@@ -29,6 +31,10 @@
     "typescript": "^5.9.0"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/hishamalward/evalmine.git",

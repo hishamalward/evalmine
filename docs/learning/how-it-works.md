@@ -9,19 +9,17 @@ the contract; this is the tour.
 ## The story, in one paragraph
 
 Every model release ships with leaderboard numbers that have never predicted what the
-model does to the forty-odd tasks I actually run. evalmine takes a YAML suite of my own
-tasks, runs it across two or more models, and answers one question: did this change help
-me, hurt me, or cost me more for the same result? It measures schema-pass rate, latency,
-cost from a price table pinned to a date, and a pairwise judge win-rate against a
-baseline — then measures the judge against my own labels, refusing to headline the
-win-rate when it cannot show the judge agrees with me. It deliberately does no RAG eval,
-no multi-turn trajectories, no fine-tuning, no UI, nothing hosted; three providers, three
-MCP tools, stop. On the example suite against the fake adapter, the number it refuses
-to headline is **0.463**: a win-rate over 20 pairs whose judge scored kappa 0.25
-against the twelve labels, below the 0.40 floor, so it prints flagged — reproducible on
-a clean checkout, and the README shows the run.
+model does to the tasks I actually run. EvalMine accepts evidence through three controlled
+lanes: direct API suites, isolated multi-turn agent episodes, and completed artifacts from
+an application-owned producer. It verifies provenance and experimental identity, measures
+quality, reliability, latency, and cost where each applies, and calibrates its judge against
+my labels before allowing a headline. Pairwise position-swap is the direct-suite default;
+episode and external evidence can also use blinded N-way ranking. The product deliberately
+does no RAG eval, fine-tuning, hosted UI, product database access, or external generation on
+an import. On the fake example suite, the number it refuses to headline is **0.463** because
+kappa 0.25 is below the 0.40 floor. That refusal is the common thesis across every lane.
 
-## One run
+## One suite run
 
 ```mermaid
 flowchart TD
@@ -53,6 +51,22 @@ flowchart TD
     S --> T
     K --> T
 ```
+
+## The other evidence lanes
+
+**Agent episodes.** A version-2 manifest pins a git seed and expands arm × episode × repeat.
+EvalMine prepares isolated copy or worktree environments, applies declared instruction and
+plugin treatments, executes only behind explicit gates, verifies evidence, and builds blind
+pairwise or N-way review. Objective checks and judge calls have separate authorization.
+
+**External artifacts.** The producer owns generation and domain access. It writes completed
+records with full condition identity, a shared blind-safe prompt, provenance, and optional
+cost receipts. `@evalmine/harness-kit` makes that boundary executable in TypeScript. Import
+hash-verifies the JSONL and makes zero provider calls; report, judge, and decide then operate
+on the same evidence envelope as agent episodes.
+
+**Workflow DAG.** Workflows coordinate contained evidence jobs and freeze their outputs. They
+do not weaken the external lane's rule: arbitrary direct-API shell generation is refused.
 
 ## The code, in run order
 
@@ -90,10 +104,11 @@ two judge passes per pair. *Why:* the guard lives in `core.run_suite()`, not `cl
 there is exactly one place money can be spent, and it over-estimates on purpose.
 
 **`adapters/base.py` · `call_with_retries()`, and the four adapters.** One `Protocol`,
-`complete(Request) -> Response`, hand-written POSTs to three documented endpoints, retries
-only on timeout, 429 and 5xx. *Why:* no provider SDKs — three SDKs are three dependency
-trees between the reader and the request; the real cost is that we learn about an API
-change by breaking rather than by upgrading.
+`complete(Request) -> Response`, hand-written POSTs to provider endpoints, retries only on
+timeout, 429 and 5xx. *Why:* no provider SDK dependencies sit between the reader and the
+request; the real cost is that we learn about an API change by breaking rather than by
+upgrading. OpenRouter routing pins are part of the request and cache key, and its exact
+response cost is preserved when returned.
 
 **`adapters/anthropic.py` · `sampling_params_supported()` / `thinking_defaults_on()`.**
 Omits `temperature` and `top_p` for Opus 4.7 and everything after it (the API returns
@@ -146,15 +161,12 @@ table sorted worst-first. *Why:* no adjectives and no recommendation anywhere in
 judgement goes in `DECISIONS.md`, worded from the owner's verdict, because a report that editorialises
 is one you stop reading critically.
 
-**`mcp_server.py` · `run_suite_impl()` / `_effective_cap()`.** Three tools over stdio, each
-a thin call into the same `core.py` functions. *Why three tools and not the CLI:* an agent
-surface should be the smallest set of verbs that supports the decision, and every extra
-tool is another way to spend money nobody authorised. *Why the cap lives in the library:*
-it is a parameter of `core.run_suite()`, not a flag MCP re-implements, so the tool layer
-cannot reach the provider layer any other way — the agent's default is $1.00 against the
-CLI's $2.00 because the human at the CLI typed the number and the agent did not, and an
-over-ceiling request is refused rather than clamped. `run_suite` returns the summary and
-paths, never raw responses: those would cost the caller more than the eval did.
+**`mcp_server.py` · guarded library wrappers.** Sixteen stdio tools cover suite, experiment,
+external-import, and workflow lifecycles without exposing arbitrary CLI execution. The
+original three suite tools remain backwards compatible. Spend, process launch, validator
+commands, external writes, and workflow commands are gated independently. The cap lives in
+the library, so MCP cannot reach a cheaper path around it; read-only tools return summaries
+and paths, never raw provider responses.
 
 ## The metrics
 
@@ -203,11 +215,11 @@ headline the win-rate, and that flag travels into the JSON and the MCP response,
 cannot be quoted clean. Kappa rather than raw agreement, because agreement inflates the
 moment ties dominate.
 
-**Why pairwise rather than absolute scores?** Absolute 1-to-5 judge scores drift between
-runs and compress into the middle, so a 0.2 gap is mostly rubric noise. A forced choice
-between two answers to the same prompt is far easier to ask consistently, and it is the
-question I actually have: should I switch. The cost is that it gives only relative
-quality, which is why schema-pass, latency and cost are absolute and sit beside it.
+**Why pairwise or N-way rather than absolute scores?** Absolute 1-to-5 judge scores drift
+between runs and compress into the middle. A forced comparison over outputs for the same
+item is easier to ask consistently. Pairwise position-swap fits one baseline/candidate
+decision; N-way ranking fits a complete multi-condition block without manufacturing a
+large pair grid. Both remain relative, so schema, checks, latency, and cost sit beside them.
 
 **What would make this result wrong?** A judge agreeing with me by accident (small `n`,
 ties dominating, `pe` near 1); a flip rate saying the verdict follows position; labels
@@ -230,11 +242,11 @@ both outputs when they do not. The check is evidence, not a verdict — a broken
 would otherwise hand out losses for a bug in the harness, which is why `error` is its
 own status and counts against the rate rather than against the model.
 
-**Why put an MCP surface on an eval tool?** So the eval happens at the moment of the
-decision rather than after it: an agent about to swap a model can run the suite and read
-the win-rate mid-task instead of a human reading a report next week. Three tools, because
-an agent surface should be the smallest set of verbs that supports the decision; the cap
-lives in the library, so that path cannot spend in any way the CLI could not.
+**Why put an MCP surface on an eval tool?** So evaluation happens at the moment of the
+decision rather than after it. Explicit lifecycle tools let an agent validate, import,
+inspect, report, and—only with the matching gates—execute or judge. The cap and containment
+rules live in the same library as the CLI, so MCP cannot spend or escape by taking a separate
+implementation path.
 
 ## Check yourself
 

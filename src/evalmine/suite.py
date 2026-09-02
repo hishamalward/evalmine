@@ -129,6 +129,7 @@ class Suite:
     labels: tuple[Label, ...]
     max_cost_usd: float | None
     mover_threshold: float
+    openrouter_provider_pins: dict[str, str]
     path: Path
     hash: str
 
@@ -435,6 +436,7 @@ def load_suite(path: str | Path) -> Suite:
 
     limits = doc.get("limits") or {}
     report_cfg = doc.get("report") or {}
+    openrouter_cfg = doc.get("openrouter") or {}
 
     return Suite(
         name=doc["suite"],
@@ -445,6 +447,7 @@ def load_suite(path: str | Path) -> Suite:
         labels=tuple(labels),
         max_cost_usd=(float(limits["max_cost_usd"]) if "max_cost_usd" in limits else None),
         mover_threshold=float(report_cfg.get("mover_threshold", DEFAULT_MOVER_THRESHOLD)),
+        openrouter_provider_pins=dict(openrouter_cfg.get("provider_pins") or {}),
         path=path,
         hash=hashlib.sha256(raw).hexdigest(),
     )

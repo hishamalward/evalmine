@@ -167,8 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="evalmine",
         description=(
-            "Score a model change against your own tasks: pairwise LLM-judge win-rates "
-            "calibrated to your labels, schema-pass rate, latency and cost."
+            "Turn direct model suites, isolated agent episodes, or imported artifacts "
+            "into calibrated, provenance-checked evaluation evidence."
         ),
     )
     parser.add_argument("--version", action="version", version=f"evalmine {__version__}")
