@@ -1,0 +1,6 @@
+# Reproducible evidence hashes and executable scripts require the same bytes on
+# every checkout, including Windows runners where Git otherwise defaults to CRLF.
+* text=auto eol=lf
+
+# Keep the recorded demo byte-for-byte binary.
+*.gif binary
