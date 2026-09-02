@@ -1,5 +1,9 @@
 # Evalmine v2 handoff
 
+> **Historical snapshot — 26 August 2026.** Paths, working-tree instructions, test counts,
+> plan identities, and remaining-work notes below describe that handoff date. Use the root
+> `README.md` and `docs/spec.md` for the current product and operator contract.
+
 **Prepared:** 26 August 2026
 
 **Repository:** `/Users/hishamal-ward/public_repos/evalmine`

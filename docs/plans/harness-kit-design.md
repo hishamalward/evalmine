@@ -1,8 +1,8 @@
 # EvalMine harness kit: adopted design
 
-The music_analytics handover identifies a real gap: producers currently recreate
-EvalMine's external-artifact contract in application code, so failures arrive only at
-import time and schema drift is easy. EvalMine will ship a small TypeScript package at
+The music_analytics handover identified a real gap: producers recreated EvalMine's
+external-artifact contract in application code, so failures arrived only at import time
+and schema drift was easy. EvalMine now ships a small TypeScript package at
 `packages/harness-kit`. It sits after generation and before
 `evalmine experiment import`: it overlays completed records, validates comparison
 semantics, and writes a hash-pinned bundle. It never calls a model, judges an output,

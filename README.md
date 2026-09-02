@@ -23,6 +23,7 @@ $ evalmine run examples/everyday-eight.yaml \
 
 run 20260823T210009Z_c4545e4e_dbc76614  (everyday-eight)
   report: reports/everyday-eight/20260823T210009Z_c4545e4e_dbc76614/report.md
+  html (blind answer pairs + labelling): reports/everyday-eight/20260823T210009Z_c4545e4e_dbc76614/report.html
   calibration: below_floor - kappa 0.25 (fair) over 12 labels - headline eligible: false
   google/gemini-2.5-flash vs anthropic/claude-haiku-4-5: win-rate 0.463 (UNCALIBRATED) [0.325-0.613] over schema-passing pairs only, n=20 - flips 3 - excluded 0
   cost: $0.0658 this run (answers $0.0081, judge $0.0578); if uncached $0.0658
@@ -33,7 +34,8 @@ checkout. Nothing above contacted a provider or spent a cent.
 
 ![evalmine: validate the suite, run it against the fake adapter, read the calibration and win-rate sections of the report it wrote](docs/demo.gif)
 
-Every frame of that is a real run. Re-record it with `vhs docs/demo.tape`
+Every frame of that is a real run captured on 23 August 2026; its displayed price-table
+filename records that capture date. Re-record the current CLI with `vhs docs/demo.tape`
 ([vhs](https://github.com/charmbracelet/vhs), `brew install vhs`).
 
 **Status.** v0.1.0, pre-release. All three evidence lanes, four direct-provider adapters,
@@ -68,7 +70,7 @@ and resolves every model string against the price table. Zero network calls.
 ```bash
 evalmine validate examples/everyday-eight.yaml
 # ok: examples/everyday-eight.yaml - 8 tasks, 20 cases, 12 labels; every prompt
-# rendered; 3 model strings resolved against prices-2026-08-23.yaml
+# rendered; 3 model strings resolved against prices-2026-08-29.yaml
 ```
 
 **Run it against the fake adapter.** `--fake` routes every model string to a built-in
@@ -87,7 +89,7 @@ evalmine run examples/everyday-eight.yaml \
 ```bash
 export ANTHROPIC_API_KEY=...
 export GOOGLE_API_KEY=...
-export OPENROUTER_API_KEY=...
+# Export OPENAI_API_KEY or OPENROUTER_API_KEY only when using that adapter.
 
 evalmine run examples/everyday-eight.yaml \
   --models anthropic/claude-haiku-4-5,google/gemini-2.5-flash \
@@ -604,7 +606,11 @@ episode and workflow controls that call the same library functions as the CLI:
 | `plan_workflow`, `run_workflow_tool`, `inspect_workflow` | plan, run, and verify DAG workflows | commands/provider calls only when authorized |
 
 Register it by copying [.mcp.json.example](.mcp.json.example) to `.mcp.json`. Install
-the extra first: `pip install -e ".[mcp]"`.
+the extra first: `pip install -e ".[mcp]"`. The example deliberately does not enumerate
+provider keys: the stdio server inherits the environment, so export only the key for the
+adapter you intend to use. For Claude Code, `${CLAUDE_PROJECT_DIR:-.}` keeps path access
+inside the project containing `.mcp.json`; clients without variable expansion should use
+an explicit absolute suite root.
 
 The point is that an agent can run your evals *mid-task* — "before you swap the model
 in this file, run the suite and tell me the win-rate" — instead of a person reading a

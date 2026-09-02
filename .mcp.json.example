@@ -1,16 +1,13 @@
 {
   "mcpServers": {
     "evalmine": {
+      "type": "stdio",
       "command": "evalmine-mcp",
       "args": [],
       "env": {
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
-        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-        "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
-        "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}",
         "EVALMINE_MCP_MAX_COST": "1.00",
         "EVALMINE_MCP_MAX_COST_CEILING": "5.00",
-        "EVALMINE_MCP_SUITE_ROOT": "${PWD}",
+        "EVALMINE_MCP_SUITE_ROOT": "${CLAUDE_PROJECT_DIR:-.}",
         "EVALMINE_MCP_ALLOW_PROVIDER_CALLS": "0",
         "EVALMINE_MCP_ALLOW_VALIDATOR_COMMANDS": "0",
         "EVALMINE_MCP_ALLOW_EXTERNAL_WRITES": "0",

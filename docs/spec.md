@@ -153,10 +153,14 @@ evalmine/
   docs/
     spec.md              this file
     learning/how-it-works.md    current product and implementation tour
+    plans/               dated design and handoff snapshots
   examples/
-    everyday-eight.yaml  §5.4
+    everyday-eight.yaml             §5.4 direct-suite fixture
+    agent-*.yaml                     isolated agent-episode fixtures
+    external-artifacts/              completed-artifact import fixture
+    music-backoff-workflow.yaml      offline workflow fixture
   prices/
-    prices-2026-08-23.yaml      §6.3
+    prices-YYYY-MM-DD.yaml      date-pinned provider tables; newest is default (§6.3)
   src/evalmine/
     __init__.py
     cli.py               argparse only; no logic
@@ -165,6 +169,13 @@ evalmine/
     experiment.py        load + validate v2 manifests; deterministic run planning
     experiment.schema.json
     workspace.py         prepare, verify, and discard isolated v2 workspaces
+    runner.py            guarded agent/API episode runners and normalized evidence
+    validators.py        objective post-run checks
+    experiment_report.py blind episode/external labeling reports
+    decision.py          calibrated judge and human decision evidence
+    external.py          completed-artifact import and verification
+    external*.json       external manifest and record schemas
+    workflow.py          controlled workflow DAG execution and verification
     adapters/
       base.py            the Protocol, Request, Response, errors
       anthropic.py  openai.py  google.py  openrouter.py  fake.py
@@ -204,8 +215,21 @@ evalmine experiment prepare <manifest.yaml> --out <outside-seed-dir> [--json]
 evalmine experiment retry <partial-prepared-dir> --out <outside-seed-dir> [--json]
 evalmine experiment verify <prepared-dir> [--json]
 evalmine experiment preflight <prepared-dir> [--json]
-evalmine experiment execute <prepared-dir> --allow-provider-calls [--turn-timeout S] [--json]
+evalmine experiment execute <prepared-dir> [--allow-provider-calls]
+         [--allow-external-writes] [--turn-timeout S] [--json]
+evalmine experiment check <prepared-dir> [--allow-validator-commands] [--json]
+evalmine experiment report <prepared-dir> [--ranking-style pairwise|n-way] [--json]
+evalmine experiment judge <prepared-dir> [--allow-provider-calls] [--max-cost USD]
+         [--labels PATH] [--fake] [--json]
+evalmine experiment decide <prepared-dir> --labels PATH [--judging PATH] [--json]
+evalmine experiment import <bundle-dir> --out <exact-evidence-dir> [--json]
 evalmine experiment discard <prepared-dir> --yes
+
+evalmine workflow validate <manifest.yaml>
+evalmine workflow plan <manifest.yaml> [--json]
+evalmine workflow run <manifest.yaml> --out <dir>
+         [--allow-commands] [--allow-provider-calls] [--json]
+evalmine workflow verify <workflow-root> [--json]
 ```
 
 Flag notes:
@@ -1318,9 +1342,9 @@ class Adapter(Protocol):
 ```
 
 `Request`: `model_id`, `system`, `prompt`, `max_tokens`, `temperature`, `top_p`,
-`stop`, `schema`, `timeout_s`.
+`stop`, `schema`, `provider_options`, `timeout_s`.
 `Response`: `text`, `input_tokens`, `output_tokens`, `cached_input_tokens`,
-`reasoning_tokens`, `latency_ms`, `finish_reason`, `schema_mode`.
+`reasoning_tokens`, `reported_cost_usd`, `latency_ms`, `finish_reason`, `schema_mode`.
 
 Errors: `AdapterError(retryable: bool)`. Retries: up to 2, delay
 `2 ** attempt + uniform(0, 1)` seconds, on timeouts, 429, and 5xx only. A
@@ -1424,9 +1448,9 @@ Reads from disk only. Zero spend, always.
 
 - The cap is a parameter of `core.run_suite(..., max_cost: float)`. The MCP tool
   is a thin caller; it cannot reach the provider layer any other way.
-- If the agent supplies `max_cost`, it is used — but clamped to
+- If the agent supplies `max_cost`, it is bounded by
   `EVALMINE_MCP_MAX_COST_CEILING` (default **$5.00**). A request above the ceiling is
-  **refused**, not clamped-and-run.
+  **refused**, never clamped-and-run.
 - If the agent omits it, the effective cap is
   `min(suite.limits.max_cost_usd, EVALMINE_MCP_MAX_COST)`, default **$1.00** — lower
   than the CLI's $2.00, because the human at the CLI typed the number and the
@@ -1446,21 +1470,28 @@ Reads from disk only. Zero spend, always.
 {
   "mcpServers": {
     "evalmine": {
+      "type": "stdio",
       "command": "evalmine-mcp",
       "args": [],
       "env": {
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
-        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-        "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
-        "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}",
         "EVALMINE_MCP_MAX_COST": "1.00",
         "EVALMINE_MCP_MAX_COST_CEILING": "5.00",
-        "EVALMINE_MCP_SUITE_ROOT": "${PWD}"
+        "EVALMINE_MCP_SUITE_ROOT": "${CLAUDE_PROJECT_DIR:-.}",
+        "EVALMINE_MCP_ALLOW_PROVIDER_CALLS": "0",
+        "EVALMINE_MCP_ALLOW_VALIDATOR_COMMANDS": "0",
+        "EVALMINE_MCP_ALLOW_EXTERNAL_WRITES": "0",
+        "EVALMINE_MCP_ALLOW_WORKFLOW_COMMANDS": "0"
       }
     }
   }
 }
 ```
+
+The stdio child inherits exported provider credentials. Keeping optional provider keys out
+of the shared JSON means Claude Code can parse the project configuration even when only one
+adapter is configured; add explicit `env` mappings only for clients that do not inherit the
+launch environment. `${CLAUDE_PROJECT_DIR:-.}` is Claude Code's project-root expansion. Set
+an explicit absolute root when using a client without that expansion syntax.
 
 ---
 

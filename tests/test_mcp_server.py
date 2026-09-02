@@ -1,4 +1,4 @@
-"""The MCP surface: three tools over the fake adapter. Spec S11.
+"""The 16-tool MCP surface over fake or read-only fixtures. Spec S11 and S13I.
 
 Skips cleanly if the ``mcp`` package is not installed (it is an optional
 extra); in this environment it is installed, so these tests exercise the

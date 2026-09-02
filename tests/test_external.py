@@ -207,6 +207,14 @@ def test_sanitized_external_example_imports_without_generation(tmp_path: Path):
     assert result.record_count == 4
     assert result.block_count == 2
     assert result.condition_count == 2
+    normalized = [
+        json.loads(line)
+        for line in (result.root / "artifacts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    correlation_ids = [record["correlation_id"] for record in normalized]
+    assert all(correlation_ids)
+    assert len(set(correlation_ids)) == result.record_count
+    assert all(len(value) <= 120 for value in correlation_ids)
 
 
 def test_partial_human_subset_can_calibrate_judge_extension(tmp_path: Path):

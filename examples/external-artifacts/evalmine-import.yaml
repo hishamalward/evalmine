@@ -4,7 +4,7 @@ question: Which completed condition produces the most useful structured summary?
 
 artifacts:
   - path: completed.jsonl
-    sha256: b0670aba418cee8496f1977f593707df8097215e8c8e905899ab9e83466e2bfe
+    sha256: d54ca217a71145f86a05e2d0f68df5ff1bef9ffe5a976584015a76e795ce3251
 
 evaluation:
   objectives:

@@ -47,9 +47,10 @@ assuming a failure is a fluke.
 
 ## No secrets, ever
 
-Keys come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GOOGLE_API_KEY` in the
-environment and from nowhere else. There is no config-file key path, and `evalmine
-run` refuses to start if a suite file contains a string matching a known key prefix.
+Keys come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, and
+`OPENROUTER_API_KEY` in the environment and from nowhere else. There is no config-file
+key path, and `evalmine run` refuses to start if a suite file contains a string matching
+a known key prefix.
 
 CI enforces this twice: a scan over the working tree, and **a scan over the entire git
 history** (`git log -p --all`). A key-shaped string in any commit fails the build, and
