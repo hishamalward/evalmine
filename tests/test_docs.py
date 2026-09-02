@@ -37,3 +37,14 @@ def test_repository_line_endings_preserve_pinned_example_hashes():
     for artifact in manifest["artifacts"]:
         raw = (example / artifact["path"]).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == artifact["sha256"]
+
+
+def test_readme_stays_a_current_product_entry_point():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert len(readme.splitlines()) <= 220
+    assert "actions/workflows/ci.yml/badge.svg?branch=main" in readme
+    assert "python-3.10%2B" in readme
+    assert "status-alpha" in readme
+    assert "license-MIT" in readme
+    assert "This README describes the present product surface." in readme
+    assert "docs/plans/" in readme
