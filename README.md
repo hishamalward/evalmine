@@ -5,6 +5,8 @@
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+**Paused (2026-10-11).** evalmine answers one question: does a model change improve your own tasks. That question is on hold. Day-to-day measurement of the agent setup moved to a session scorecard that reads both hosts' transcripts and prints one results table per configuration; it is a private script for now and will be linked here when it has a README, fixtures and a sample table.
+
 Leaderboards do not tell you whether a model change improves the work you actually do.
 evalmine turns controlled evidence from your own tasks into a decision you can defend. It
 accepts direct model suites, isolated agent episodes, or completed artifacts from an
